@@ -92,6 +92,12 @@ func Empty(path string) {
 	}
 }
 
+func True(condition bool, message string) {
+	if !condition {
+		panic(prefixMessage(message))
+	}
+}
+
 func prefixMessage(customMessage string) string {
 	return fmt.Sprintf("Assertion failed: %s", customMessage)
 }
