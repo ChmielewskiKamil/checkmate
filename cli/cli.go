@@ -14,9 +14,9 @@ import (
 
 type Program struct {
 	totalGeneratedMutants int32
-	totalSlainMutants     int32
+	totalUnslainMutants   int32
 	perFileGenerated      map[string]int32
-	perFileSlain          map[string]int32
+	perFileUnslain        map[string]int32
 
 	testCMD          *string // The command to run the test suite e.g. 'forge test'.
 	mutantsDIR       *string // Path to the directory where generated mutants are stored.
@@ -37,6 +37,12 @@ type GambitEntry struct {
 
 func New() *Program {
 	p := Program{}
+
+	perFileGenerated := make(map[string]int32)
+	p.perFileGenerated = perFileGenerated
+
+	perFileUnslain := make(map[string]int32)
+	p.perFileUnslain = perFileUnslain
 
 	parseCmdFlags(&p)
 
@@ -59,6 +65,7 @@ func Run(p *Program) error {
 		runGambit(p)
 	}
 
+	fmt.Println("[Info] Attempting an initial test run to check if your test suite is ready for the mutation analysis.")
 	if !testSuitePasses(p) {
 		return fmt.Errorf(`[Error] Your test suite fails the initial run.
         The test suite must be passing when the code is not mutated yet!
@@ -122,18 +129,12 @@ func mutantsExist(p *Program) bool {
 		return false
 	}
 
-	entries, err := os.ReadDir(*p.mutantsDIR)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[Error] Could not read mutants directory: %v\n", err)
+	if len(listSolidityFiles(*p.mutantsDIR)) == 0 {
+		fmt.Printf("[Info] The mutants directory at: '%s' exists but it DOES NOT contain any Solidity files.\n", *p.mutantsDIR)
 		return false
 	}
 
-	if len(entries) == 0 {
-		fmt.Printf("[Info] Mutants directory at: '%s' is empty.\n", *p.mutantsDIR)
-		return false
-	}
-
-	fmt.Printf("[Info] Found mutants directory at: '%s' and it is NOT empty.\n", *p.mutantsDIR)
+	fmt.Printf("[Info] Found mutants directory at: '%s' that contains Solidity files.\n", *p.mutantsDIR)
 	return true
 }
 
@@ -221,7 +222,7 @@ func runGambit(p *Program) {
 
 	// Post-conditions
 	assert.NotEmpty(*p.mutantsDIR)
-	// TODO: Assert that it contains at least 1 solidity file
+	assert.True(len(listSolidityFiles(*p.mutantsDIR)) > 0, "There are no Solidity files in the mutants directory after running 'gambit mutate'.")
 }
 
 func testSuitePasses(p *Program) bool {
@@ -261,19 +262,30 @@ func saveMutationStats(p *Program) {
 	// Pre-conditions
 	assert.PathExists(*p.mutantsDIR)
 
-	// Take snaphsot of the mutants in the mutants/ folder.
-	// From here there are two possibilities:
-	// 1. It is the first time we are doing this -> pre testing phase
-	// 2. It is the second time -> post testing phase
+	mutants := listSolidityFiles(*p.mutantsDIR)
 
-	// Actions
 	if p.totalGeneratedMutants == 0 {
-		// TODO Assert that slain is 0 as well
-		// TODO Assert that mutants/ dir is not empty and contains .sol files.
+		assert.True(len(mutants) > 0, "There must be mutants in the pre-analysis phase.")
+		assert.True(p.totalUnslainMutants == 0, "Before analysis we don't know if there will be unslain mutants.")
+
+		p.totalGeneratedMutants = int32(len(mutants))
+		for _, mutant := range mutants {
+			p.perFileGenerated[mutant.Filename]++
+		}
+
+		assert.True(len(p.perFileGenerated) > 0, "There should be non-zero keys in the per file generated mutants mapping.")
+		assert.True(len(p.perFileUnslain) == 0, "There should be zero keys in the per file unslain mutants mapping.")
+
+		return
 	}
 
-	// Post-conditions
-	// TODO Panic here, we should have returned earlier.
+	p.totalUnslainMutants = int32(len(mutants))
+
+	for _, mutant := range mutants {
+		p.perFileUnslain[mutant.Filename]++
+	}
+
+	assert.True(len(p.perFileUnslain) > 0, "There should be non-zero keys in the per file unslain mutants mapping.")
 }
 
 func listSolidityFiles(pathToContracts string) []SolidityFile {
