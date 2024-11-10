@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"checkmate/assert"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 type Program struct {
@@ -18,6 +22,17 @@ type Program struct {
 	mutantsDIR       *string // Path to the directory where generated mutants are stored.
 	gambitConfigPath *string // Path to gambit's config json file
 	skipGambit       *bool   // If you don't have or don't want to run gambit, skip it.
+	contractsDIR     *string // Path to the folder where Solidity contracts are store. Default is "src/".
+}
+
+type SolidityFile struct {
+	Filename            string // Name of the file with the extension e.g 'Counter.sol'
+	PathFromProjectRoot string // Path to the file from the project's root e.g. 'src/Counter.sol'
+}
+
+type GambitEntry struct {
+	FilePath       string   `json:"filename"`        // File to the Solidity file from the project's root e.g. src/Counter.sol
+	SolcRemappings []string `json:"solc_remappings"` // A list of Solc compiler remappings
 }
 
 func New() *Program {
@@ -38,6 +53,8 @@ func Run(p *Program) error {
 			if err != nil {
 				return err
 			}
+			fmt.Println("\033[33m[Info] Generated gambit config successfuly.\n       Please review it and remove any files that you don't intend to test e.g. interfaces.\n       This will speed up the time it takes for gambit to generate the mutants and later\n       to run the analysis. After that re-run checkmate.\033[0m")
+			os.Exit(0)
 		}
 		runGambit(p)
 	}
@@ -77,8 +94,14 @@ func parseCmdFlags(p *Program) {
 
 	gambitConfigPath := flag.String(
 		"config-path",
-		"./gambit-config.json",
-		"Specify the path to the gambit config json file. Default is './gambit-config.json'.",
+		"./gambit_config.json",
+		"Specify the path to the gambit config json file. Default is './gambit_config.json'.",
+	)
+
+	contractFilesPath := flag.String(
+		"contracts-path",
+		"./src",
+		"Specify the path to the folder with your smart contracts. The default is './src'.",
 	)
 
 	flag.Parse()
@@ -87,6 +110,7 @@ func parseCmdFlags(p *Program) {
 	p.mutantsDIR = mutantsDIR
 	p.skipGambit = skipGambit
 	p.gambitConfigPath = gambitConfigPath
+	p.contractsDIR = contractFilesPath
 
 	// Post-conditions
 	// TODO: Gambit config should be a valid json file
@@ -114,11 +138,18 @@ func mutantsExist(p *Program) bool {
 }
 
 func gambitConfigExists(p *Program) bool {
-	if _, err := os.Stat(*p.gambitConfigPath); os.IsNotExist(err) {
+	if info, err := os.Stat(*p.gambitConfigPath); os.IsNotExist(err) {
 		fmt.Printf("[Info] Gambit config json file does not exist.\n")
 		return false
 	} else if err != nil {
-		fmt.Fprintf(os.Stderr, "[Error] There was a problem accessing the path: %s.\n", *p.gambitConfigPath)
+		fmt.Fprintf(os.Stderr, "[Error] There was a problem accessing the config path: %s.\n", err)
+		return false
+	} else if info.Size() == 0 {
+		fmt.Fprintf(os.Stderr, "[Error] The provided gambit config file: %s is empty.\n", *p.gambitConfigPath)
+		err = os.Remove(*p.gambitConfigPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[Error] Couldn't remove the empty config file: %s .\n", err)
+		}
 		return false
 	}
 
@@ -129,15 +160,35 @@ func gambitConfigExists(p *Program) bool {
 func generateGambitConfig(p *Program) error {
 	// Pre-conditions
 	assert.PathNotExists(*p.gambitConfigPath)
+	assert.PathExists(*p.contractsDIR)
 
 	// Actions
-	// TODO: Implement config generation
-	return fmt.Errorf("\033[31m[Error] Gambit config generation is not yet implemented.\n        Please provide your own config file. Thanks!\033[0m")
+	solidityFiles := listSolidityFiles(*p.contractsDIR)
+	gambitEntries, err := generateGambitEntries(solidityFiles)
+	if err != nil {
+		return fmt.Errorf("[Error] Couldn't generate gambit entires: %s", err)
+	}
+
+	jsonData, err := json.MarshalIndent(gambitEntries, "", "    ")
+	if err != nil {
+		return fmt.Errorf("[Error] There was a problem marshalling gambit entries: %s", err)
+	}
+
+	file, err := os.Create(*p.gambitConfigPath)
+	if err != nil {
+		return fmt.Errorf("error creating file: %w", err)
+	}
+	defer file.Close()
+
+	_, err = file.Write(jsonData)
+	if err != nil {
+		return fmt.Errorf("error writing to file: %w", err)
+	}
 
 	// Post-conditions
-	// assert.PathExists(*gambitConfigPath)
-	// assert.NotEmpty(*gambitConfigPath)
-	// return nil
+	assert.PathExists(*p.gambitConfigPath)
+	assert.NotEmpty(*p.gambitConfigPath)
+	return nil
 }
 
 func runGambit(p *Program) {
@@ -217,6 +268,131 @@ func saveMutationStats(p *Program) {
 
 	// Post-conditions
 	// TODO Panic here, we should have returned earlier.
+}
+
+func listSolidityFiles(pathToContracts string) []SolidityFile {
+	var solidityFiles []SolidityFile
+
+	// Use an anonymous function to wrap the call to visitSolFile
+	filepath.Walk(pathToContracts, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[Error] There was a problem accessing path %q: %v\n", path, err)
+			return err // Return any error to filepath.Walk
+		}
+
+		fileRecord := visitSolFile(path, info)
+		if fileRecord != nil {
+			solidityFiles = append(solidityFiles, *fileRecord)
+		}
+
+		return nil // Continue walking the directory
+	})
+
+	return solidityFiles
+}
+
+func visitSolFile(absolutePath string, info os.FileInfo) *SolidityFile {
+	if !info.IsDir() && strings.HasSuffix(info.Name(), ".sol") {
+		// Compute the relative path based on absolute and project root.
+		// E.g. given /user/projects/StakingProtocol/src/Pool.sol and project root ('./')
+		// we will get /src/Pool.sol
+		pathFromProjectRoot, err := filepath.Rel("./", absolutePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[Error] Error computing relative path to file: %s", err)
+			return nil
+		}
+
+		return &SolidityFile{
+			Filename:            info.Name(),
+			PathFromProjectRoot: pathFromProjectRoot,
+		}
+	}
+
+	return nil
+}
+
+func generateGambitEntries(solidityFiles []SolidityFile) ([]GambitEntry, error) {
+	// Pre-condition
+	assert.True(len(solidityFiles) > 0, "No Solidity files were provided. Can't generate gambit entries.")
+
+	forgeRemappings, err := getForgeRemappings()
+	if err != nil {
+		return nil, err
+	}
+
+	gambitRemappings := transformForgeRemappings(forgeRemappings)
+
+	assert.True(len(gambitRemappings) > 0, "Got 0 gambit remappings.")
+
+	var gambitEntries []GambitEntry
+
+	for _, file := range solidityFiles {
+		entry := GambitEntry{
+			FilePath:       file.PathFromProjectRoot,
+			SolcRemappings: gambitRemappings,
+		}
+
+		gambitEntries = append(gambitEntries, entry)
+	}
+
+	// Post-condition
+	assert.True(len(gambitEntries) > 0, "Generated 0 gambit entries.")
+
+	return gambitEntries, nil
+}
+
+func getForgeRemappings() (string, error) {
+	var out bytes.Buffer
+
+	cmd := exec.Command("forge", "remappings")
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	err := cmd.Start()
+	if err != nil {
+		return "", fmt.Errorf("Failed to run forge remappings: %v", err)
+	}
+
+	err = cmd.Wait()
+	if err != nil {
+		return "", fmt.Errorf("Forge remappings finished with an error: %v", err)
+	}
+
+	// Post-conditions
+	// There is always at least: forge-std/=lib/forge-std/src/
+	assert.True(out.Len() > 0, "Forge remappings are empty.")
+
+	return out.String(), nil
+}
+
+func transformForgeRemappings(forgeRemappings string) []string {
+	// Pre-conditions
+	assert.True(len(forgeRemappings) > 0, "Cannot create gambit remappings if forge remappings are empty.")
+
+	var gambitRemappings []string
+
+	lines := strings.Split(forgeRemappings, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Split each remapping into "from" and "to" parts
+		parts := strings.Split(line, "/=")
+		if len(parts) == 2 {
+			from := strings.TrimSpace(parts[0])
+			to := strings.TrimSpace(parts[1])
+
+			gambitRemappings = append(gambitRemappings, fmt.Sprintf("%s=%s", from, to))
+		}
+	}
+
+	// Post-conditions
+	assert.True(len(gambitRemappings) > 0, "Transformed 0 gambit remappings.")
+
+	return gambitRemappings
 }
 
 func testMutations(p *Program) {}
