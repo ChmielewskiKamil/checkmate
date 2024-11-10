@@ -198,20 +198,26 @@ func runGambit(p *Program) {
 
 	// Actions
 	cmd := exec.Command("gambit", "mutate", "--json", *p.gambitConfigPath)
+
+	// Report output streams in real time.
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
 	err := cmd.Start()
 	if err != nil {
 		panic(fmt.Sprintf("[Error] Error starting gambit: %v", err))
 	}
 
-	fmt.Println("[Info] Mutating the code, please wait...")
+	fmt.Println("[Info] Mutating the code with gambit, please wait...\n       This might take a while for bigger projects (e.g. over 15 minutes)")
+	fmt.Println("")
 
 	// Use Wait to block until the gambit is finished generating mutants.
 	err = cmd.Wait()
 	if err != nil {
-		panic(fmt.Sprintf("[Error] Gambit finished with error: %v", err))
+		panic(fmt.Sprintf("\n[Error] Gambit finished with error: %v\n", err))
 	}
 
-	fmt.Println("[Info] Mutants generated ✅")
+	fmt.Println("\n[Info] Mutants generated ✅")
 
 	// Post-conditions
 	assert.NotEmpty(*p.mutantsDIR)
