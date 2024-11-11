@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -66,18 +68,22 @@ func Run(p *Program) error {
 	}
 
 	fmt.Println("[Info] Attempting an initial test run to check if your test suite is ready for the mutation analysis.")
-	if !testSuitePasses(p) {
+	if !testSuitePasses(p, true) {
 		return fmt.Errorf(`[Error] Your test suite fails the initial run.
         The test suite must be passing when the code is not mutated yet!
         Ensure that you have no failing tests before you attempt mutation testing your code.`)
 	}
 
 	saveMutationStats(p)
+	printMutationStats(p)
 
-	testMutations(p)
+	err := testMutations(p)
+	if err != nil {
+		return err
+	}
 
 	saveMutationStats(p)
-
+	printMutationStats(p)
 	// Post-conditions
 	return nil
 }
@@ -225,7 +231,7 @@ func runGambit(p *Program) {
 	assert.True(len(listSolidityFiles(*p.mutantsDIR)) > 0, "There are no Solidity files in the mutants directory after running 'gambit mutate'.")
 }
 
-func testSuitePasses(p *Program) bool {
+func testSuitePasses(p *Program, detailedLogs bool) bool {
 	// Pre-conditions
 
 	// sh -c enables the CMD to be passed as a single string without slicing
@@ -240,14 +246,18 @@ func testSuitePasses(p *Program) bool {
 			if exitErr.ExitCode() == 127 {
 				fmt.Fprintf(os.Stderr, "[Error] Command not found: %s\n", *p.testCMD)
 			} else {
-				fmt.Fprintf(os.Stderr, "[Error] %s\n        Foundry's forge output:\n", err)
-				fmt.Fprintln(os.Stderr, "\033[31m------- Foundry Error Zone - Start -------\033[0m")
-				fmt.Fprintln(os.Stderr, string(output))
-				fmt.Fprintln(os.Stderr, "\033[31m------- Foundry Error Zone - End -------\033[0m")
+				if detailedLogs {
+					fmt.Fprintf(os.Stderr, "[Error] %s\n        Foundry's forge output:\n", err)
+					fmt.Fprintln(os.Stderr, "\033[31m------- Foundry Error Zone - Start -------\033[0m")
+					fmt.Fprintln(os.Stderr, string(output))
+					fmt.Fprintln(os.Stderr, "\033[31m------- Foundry Error Zone - End -------\033[0m")
+				}
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "[Error] There was an error running the command: %s\n", err)
 		}
+
+		fmt.Println("[Info] Test suite failed.")
 		return false
 	}
 
@@ -286,6 +296,20 @@ func saveMutationStats(p *Program) {
 	}
 
 	assert.True(len(p.perFileUnslain) > 0, "There should be non-zero keys in the per file unslain mutants mapping.")
+}
+
+func printMutationStats(p *Program) {
+	fmt.Printf("--------- Mutation Stats - Start ---------\n\n")
+
+	fmt.Printf("Total mutants generated: %d\n", p.totalGeneratedMutants)
+	fmt.Printf("Total mutants unslain: %d\n", p.totalUnslainMutants)
+	fmt.Printf("Below is the per file breakdown: \n")
+	for file, count := range p.perFileGenerated {
+		fmt.Printf("%s: generated %d\n", file, count)
+		fmt.Printf("%s: unslain   %d\n", file, p.perFileUnslain[file])
+	}
+
+	fmt.Printf("\n--------- Mutation Stats - End -----------\n\n")
 }
 
 func listSolidityFiles(pathToContracts string) []SolidityFile {
@@ -413,4 +437,82 @@ func transformForgeRemappings(forgeRemappings string) []string {
 	return gambitRemappings
 }
 
-func testMutations(p *Program) {}
+func testMutations(p *Program) error {
+	// Pre-conditions
+	assert.True(p.totalGeneratedMutants > 0, "Can't perform analysis if there are no mutants.")
+	assert.True(p.totalUnslainMutants == 0, "Before performing the analysis there must be 0 unslain mutants.")
+
+	fmt.Printf("\n\033[32m[Info] Starting the mutation analysis.\033[0m\n\n")
+
+	mutants := listSolidityFiles(*p.mutantsDIR)
+	for _, mutant := range mutants {
+		// Given: gambit_out/mutants/001/src/staking/Pool.sol
+		// We want to copy to /src/staking/Pool.sol
+
+		// From "./src" -> "/src/"
+		normalizedContractsDirPath := path.Clean(*p.contractsDIR) + string(os.PathSeparator)
+
+		idx := strings.Index(mutant.PathFromProjectRoot, normalizedContractsDirPath)
+		if idx == -1 {
+			return fmt.Errorf("[Error] Failed to find the common path between contracts and mutants directories.")
+		}
+
+		// From "gambit_out/mutants/001/src/staking/Pool.sol" -> "src/staking/Pool.sol"
+		destinationPath := mutant.PathFromProjectRoot[idx:]
+
+		backupPath := destinationPath + ".bak"
+		err := copyFile(destinationPath, backupPath)
+		if err != nil {
+			return fmt.Errorf("[Error] Failed to backup original file %s: %v", destinationPath, err)
+		}
+
+		err = copyFile(mutant.PathFromProjectRoot, destinationPath)
+		if err != nil {
+			return fmt.Errorf(
+				"[Error] There was a problem copying the mutant to the destination path: %s, %s",
+				destinationPath, err)
+		}
+
+		if !testSuitePasses(p, false) {
+			fmt.Printf("[Info] Mutant slain 🗡️ (%s)\n", mutant.PathFromProjectRoot)
+			mutantFolder := mutant.PathFromProjectRoot[:idx]
+			err := os.RemoveAll(mutantFolder)
+			if err != nil {
+				return fmt.Errorf("Couldn't remove slain mutant from the mutant's dir: %s", err)
+			}
+		} else {
+			fmt.Printf("[Info] Test suite didn't catch the bug. Mutant unslain: %s.\n", mutant.PathFromProjectRoot)
+		}
+
+		// Ensure original file is restored when function returns
+		err = copyFile(backupPath, destinationPath)
+		if err != nil {
+			return fmt.Errorf("Couldn't restore the backup file at the destination: %s", err)
+		}
+		err = os.Remove(backupPath)
+		if err != nil {
+			return fmt.Errorf("Couldn't remove the backup file: %s", err)
+		}
+	}
+
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	assert.PathExists(src)
+
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destinationFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destinationFile.Close()
+
+	_, err = io.Copy(destinationFile, sourceFile)
+	return err
+}
