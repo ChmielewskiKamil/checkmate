@@ -2,10 +2,10 @@ package cli
 
 import (
 	"bytes"
-	"checkmate/assert"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/ChmielewskiKamil/checkmate/assert"
 	"io"
 	"os"
 	"os/exec"

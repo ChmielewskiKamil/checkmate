@@ -1,8 +1,8 @@
 package main
 
 import (
-	"checkmate/cli"
 	"fmt"
+	"github.com/ChmielewskiKamil/checkmate/cli"
 	"os"
 )
 
