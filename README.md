@@ -7,3 +7,14 @@ files, generating the mutants with Gambit's `mutate` command and testing the
 generated mutations. The goal of Checkmate is to provide a hands-off experience
 for security researchers and developers to run a single command, go do something
 else and come back to see the analysis results.
+
+### TLDR;
+
+1. Install Checkmate with: `go install github.com/ChmielewskiKamil/checkmate@latest`
+2. `cd` into your Solidity's project root and run `checkmate`
+3. Wait and reap the benefits (for large repos this might take a couple of hours
+   to run from start to finish)
+
+**IMPORTANT**: If you want to generate mutants with gambit as well, make sure
+that you have [Gambit](https://github.com/Certora/gambit) installed.
+
