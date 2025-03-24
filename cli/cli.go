@@ -15,10 +15,12 @@ import (
 )
 
 type Program struct {
-	totalGeneratedMutants int32
-	totalUnslainMutants   int32
-	perFileGenerated      map[string]int32
-	perFileUnslain        map[string]int32
+	totalGeneratedMutants uint32
+	totalUnslainMutants   uint32
+	totalSlainMutants     uint32
+	perFileGenerated      map[string]uint32
+	perFileUnslain        map[string]uint32
+	perFileSlain          map[string]uint32
 
 	testCMD          *string // The command to run the test suite e.g. 'forge test'.
 	mutantsDIR       *string // Path to the directory where generated mutants are stored.
@@ -40,11 +42,14 @@ type GambitEntry struct {
 func New() *Program {
 	p := Program{}
 
-	perFileGenerated := make(map[string]int32)
+	perFileGenerated := make(map[string]uint32)
 	p.perFileGenerated = perFileGenerated
 
-	perFileUnslain := make(map[string]int32)
+	perFileUnslain := make(map[string]uint32)
 	p.perFileUnslain = perFileUnslain
+
+	perFileSlain := make(map[string]uint32)
+	p.perFileSlain = perFileSlain
 
 	parseCmdFlags(&p)
 
@@ -277,24 +282,30 @@ func saveMutationStats(p *Program) {
 	if p.totalGeneratedMutants == 0 {
 		assert.True(len(mutants) > 0, "There must be mutants in the pre-analysis phase.")
 		assert.True(p.totalUnslainMutants == 0, "Before analysis we don't know if there will be unslain mutants.")
+		assert.True(p.totalSlainMutants == 0, "Before analysis we don't know if there will be slain mutants.")
 
-		p.totalGeneratedMutants = int32(len(mutants))
+		p.totalGeneratedMutants = uint32(len(mutants))
 		for _, mutant := range mutants {
 			p.perFileGenerated[mutant.Filename]++
 		}
 
 		assert.True(len(p.perFileGenerated) > 0, "There should be non-zero keys in the per file generated mutants mapping.")
 		assert.True(len(p.perFileUnslain) == 0, "There should be zero keys in the per file unslain mutants mapping.")
+		assert.True(len(p.perFileSlain) == 0, "There should be zero keys in the per file slain mutants mapping.")
 
 		return
 	}
 
-	p.totalUnslainMutants = int32(len(mutants))
+	p.totalUnslainMutants = uint32(len(mutants))
+	p.totalSlainMutants = p.totalGeneratedMutants - p.totalUnslainMutants
 
 	for _, mutant := range mutants {
 		p.perFileUnslain[mutant.Filename]++
+
+		// perFileSlain are incremented during the analysis
 	}
 
+	// Post-conditions
 	assert.True(len(p.perFileUnslain) > 0, "There should be non-zero keys in the per file unslain mutants mapping.")
 }
 
@@ -303,13 +314,24 @@ func printMutationStats(p *Program) {
 
 	fmt.Printf("Total mutants generated: %d\n", p.totalGeneratedMutants)
 	fmt.Printf("Total mutants unslain: %d\n", p.totalUnslainMutants)
+	fmt.Printf("Total mutants slain: %d\n", p.totalSlainMutants)
+	fmt.Printf("Mutation Score: %.2f%%\n\n", calculateMutationScore(p.totalSlainMutants, p.totalGeneratedMutants))
 	fmt.Printf("Below is the per file breakdown: \n")
 	for file, count := range p.perFileGenerated {
 		fmt.Printf("%s: generated %d\n", file, count)
 		fmt.Printf("%s: unslain   %d\n", file, p.perFileUnslain[file])
+		fmt.Printf("%s: slain     %d\n", file, p.perFileSlain[file])
+		fmt.Printf("%s: mutation score %.2f%%\n", file, calculateMutationScore(p.perFileSlain[file], count))
 	}
 
 	fmt.Printf("\n--------- Mutation Stats - End -----------\n\n")
+}
+
+func calculateMutationScore(slain, total uint32) float64 {
+	if total == 0 {
+		return 0.0 // Avoid division by zero
+	}
+	return (float64(slain) / float64(total)) * 100
 }
 
 func listSolidityFiles(pathToContracts string) []SolidityFile {
@@ -480,8 +502,11 @@ func testMutations(p *Program) error {
 			if err != nil {
 				return fmt.Errorf("Couldn't remove slain mutant from the mutant's dir: %s", err)
 			}
+
+			p.perFileSlain[mutant.Filename]++
+
 		} else {
-			fmt.Printf("[Info] Test suite didn't catch the bug. Mutant unslain: %s.\n", mutant.PathFromProjectRoot)
+			fmt.Printf("[Info] Test suite didn't catch the bug ❌ Mutant unslain: %s.\n", mutant.PathFromProjectRoot)
 		}
 
 		// Ensure original file is restored when function returns
