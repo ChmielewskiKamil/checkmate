@@ -16,5 +16,6 @@ else and come back to see the analysis results.
    to run from start to finish)
 
 **IMPORTANT**: If you want to generate mutants with gambit as well, make sure
-that you have [Gambit](https://github.com/Certora/gambit) installed.
+that you have [Gambit](https://github.com/Certora/gambit) installed since
+`checkmate` calls `gambit mutate --json gambit_config.json`.
 
