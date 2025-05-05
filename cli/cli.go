@@ -211,6 +211,9 @@ func runGambit(p *Program) {
 	// TODO: Before doing that validate that the dependencies listed in the
 	// gambit config actually exist. Otherwise Gambit throws weird errors.
 
+	// TODO: Before running Gambit ensure that the Solidity compiler version is
+	// set to correct version.
+
 	// Actions
 	cmd := exec.Command("gambit", "mutate", "--json", *p.gambitConfigPath)
 
