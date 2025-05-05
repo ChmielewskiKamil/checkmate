@@ -208,6 +208,9 @@ func runGambit(p *Program) {
 	assert.PathExists(*p.gambitConfigPath)
 	assert.NotEmpty(*p.gambitConfigPath)
 
+	// TODO: Before doing that validate that the dependencies listed in the
+	// gambit config actually exist. Otherwise Gambit throws weird errors.
+
 	// Actions
 	cmd := exec.Command("gambit", "mutate", "--json", *p.gambitConfigPath)
 
