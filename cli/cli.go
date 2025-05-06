@@ -312,7 +312,7 @@ func saveMutationStats(p *Program) {
 	}
 
 	// Post-conditions
-	assert.True(len(p.perFileUnslain) > 0, "There should be non-zero keys in the per file unslain mutants mapping.")
+	assert.True(len(p.perFileUnslain) >= 0, "There should be unslain unless test suite scores 100%")
 }
 
 func printMutationStats(p *Program) {
