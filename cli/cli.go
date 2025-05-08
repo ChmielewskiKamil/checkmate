@@ -233,30 +233,35 @@ func runGambit(p *Program) {
 
 	cmd := exec.Command("gambit", "mutate", "--json", *p.gambitConfigPath)
 
-	stdoutPipe, _ := cmd.StdoutPipe()
 	stderrPipe, _ := cmd.StderrPipe()
 
-	go io.Copy(os.Stdout, stdoutPipe)
-
+	// Buffer to capture stderr to detect errors later
 	stderrScanner := bufio.NewScanner(stderrPipe)
 
 	errDetected := make(chan struct{})
 	var snippet []string
-	const snippetLines = 5
+	const snippetLines = 5 // length of solc compiler version mismatch error
 	linesAfterMatch := 0
+	var errorPrinted bool
 
+	// Start a goroutine to scan stderr and capture the error
 	go func() {
 		for stderrScanner.Scan() {
 			line := stderrScanner.Text()
-			fmt.Fprintln(os.Stderr, line)
 
-			// Error detected — start collecting snippet
+			// If we detect an error in stderr
 			if strings.Contains(line, "compiler returned exit code") ||
 				strings.Contains(line, "Source file requires different compiler version") {
 
-				snippet = append(snippet, line)
-				linesAfterMatch = 0
-				continue
+				if !errorPrinted {
+					// We haven't printed the error yet, now we start
+					snippet = append(snippet, line)
+					linesAfterMatch = 0
+					errorPrinted = true
+				} else {
+					// If we've already printed the error, skip printing again
+					continue
+				}
 			}
 
 			if len(snippet) > 0 && linesAfterMatch < snippetLines {
@@ -271,6 +276,7 @@ func runGambit(p *Program) {
 		}
 	}()
 
+	// Start the process
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "\033[91m[Error] Failed to start gambit: %v\033[0m\n", err)
 		os.Exit(1)
@@ -278,8 +284,10 @@ func runGambit(p *Program) {
 
 	fmt.Printf("\033[92m[Info] Mutating the code with gambit, please wait...\n       This might take a while for bigger projects (e.g. over 15 minutes).\033[0m\n")
 
+	// Use select block to either handle the error or continue execution
 	select {
 	case <-errDetected:
+		// Handle error when detected
 		fmt.Fprintln(os.Stderr, "\n\033[91m[Error] Solidity compilation failed during mutation.\033[0m")
 		fmt.Fprintln(os.Stderr, "\033[93m[Hint] Your local Solidity compiler (solc) version may not match the pragma version declared in your contracts.\033[0m")
 		fmt.Fprintln(os.Stderr, "\033[93m[Hint] You can install and switch compiler versions using solc-select:\033[0m")
@@ -290,16 +298,19 @@ func runGambit(p *Program) {
 		for _, l := range snippet {
 			fmt.Fprintln(os.Stderr, l)
 		}
+
 		_ = cmd.Process.Kill()
 		os.Exit(1)
 
 	case err := <-waitForCmd(cmd):
 		if err != nil {
+			// Handle Gambit process exit error
 			fmt.Fprintf(os.Stderr, "\033[91m[Error] Gambit exited with error: %v\033[0m\n", err)
 			os.Exit(1)
 		}
 	}
 
+	// If no error detected, print the success message
 	fmt.Println("\n[Info] Mutants generated ✅")
 	assert.NotEmpty(*p.mutantsDIR)
 	assert.True(len(listSolidityFiles(*p.mutantsDIR)) > 0, "There are no Solidity files in the mutants directory after running 'gambit mutate'.")
