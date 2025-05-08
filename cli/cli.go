@@ -96,34 +96,34 @@ func Run(p *Program) error {
 }
 
 func parseCmdFlags(p *Program) {
-	versionFlag := flag.Bool("version", false, "Print the version and exit")
+	versionFlag := flag.Bool("version", false, "Print the checkmate version and exit (only works if you installed from GitHub via 'go install').")
 
 	testCMD := flag.String(
 		"test-command",
 		"forge test --fail-fast",
-		"Specify the command to run your test suite. The default is 'forge test --fail-fast'.")
+		"Specify the command to run your test suite. For hardhat repos, you can use 'npx hardhat test --bail'.")
 
 	mutantsDIR := flag.String(
 		"mutants-dir",
 		"./gambit_out/mutants",
-		"Specify the path to the mutants directory. Default is './gambit_out/mutants'.")
+		"Specify the path to the mutants directory.")
 
 	skipGambit := flag.Bool(
 		"skip-gambit",
 		false,
-		"If you don't want checkmate to generate the mutants for you, specify this flag as 'true'.",
+		"If you don't want checkmate to generate the mutants for you, specify this flag as 'true'. In this mode it will just run the test suite over the previously generated mutants.",
 	)
 
 	gambitConfigPath := flag.String(
 		"config-path",
 		"./gambit_config.json",
-		"Specify the path to the gambit config json file. Default is './gambit_config.json'.",
+		"Specify the path to the gambit config json file.",
 	)
 
 	contractFilesPath := flag.String(
 		"contracts-path",
 		"./src",
-		"Specify the path to the folder with your smart contracts. The default is './src'.",
+		"Specify the path to the folder with your smart contracts. For hardhat repositories this is usually './contracts'.",
 	)
 
 	flag.Parse()
