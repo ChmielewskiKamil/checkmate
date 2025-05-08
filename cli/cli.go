@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -227,36 +228,90 @@ func generateGambitConfig(p *Program) error {
 }
 
 func runGambit(p *Program) {
-	// Pre-conditions
 	assert.PathExists(*p.gambitConfigPath)
 	assert.NotEmpty(*p.gambitConfigPath)
 
-	// Actions
 	cmd := exec.Command("gambit", "mutate", "--json", *p.gambitConfigPath)
 
-	// Report output streams in real time.
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	stdoutPipe, _ := cmd.StdoutPipe()
+	stderrPipe, _ := cmd.StderrPipe()
 
-	err := cmd.Start()
-	if err != nil {
-		panic(fmt.Sprintf("[Error] Error starting gambit: %v", err))
+	go io.Copy(os.Stdout, stdoutPipe)
+
+	stderrScanner := bufio.NewScanner(stderrPipe)
+
+	errDetected := make(chan struct{})
+	var snippet []string
+	const snippetLines = 5
+	linesAfterMatch := 0
+
+	go func() {
+		for stderrScanner.Scan() {
+			line := stderrScanner.Text()
+			fmt.Fprintln(os.Stderr, line)
+
+			// Error detected — start collecting snippet
+			if strings.Contains(line, "compiler returned exit code") ||
+				strings.Contains(line, "Source file requires different compiler version") {
+
+				snippet = append(snippet, line)
+				linesAfterMatch = 0
+				continue
+			}
+
+			if len(snippet) > 0 && linesAfterMatch < snippetLines {
+				snippet = append(snippet, line)
+				linesAfterMatch++
+				if linesAfterMatch >= snippetLines {
+					// Stop further reading and signal fatal error
+					errDetected <- struct{}{}
+					return
+				}
+			}
+		}
+	}()
+
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "\033[91m[Error] Failed to start gambit: %v\033[0m\n", err)
+		os.Exit(1)
 	}
 
-	fmt.Println("[Info] Mutating the code with gambit, please wait...\n       This might take a while for bigger projects (e.g. over 15 minutes)")
-	fmt.Println("")
+	fmt.Printf("\033[92m[Info] Mutating the code with gambit, please wait...\n       This might take a while for bigger projects (e.g. over 15 minutes).\033[0m\n")
 
-	// Use Wait to block until the gambit is finished generating mutants.
-	err = cmd.Wait()
-	if err != nil {
-		panic(fmt.Sprintf("\n[Error] Gambit finished with error: %v\n", err))
+	select {
+	case <-errDetected:
+		fmt.Fprintln(os.Stderr, "\n\033[91m[Error] Solidity compilation failed during mutation.\033[0m")
+		fmt.Fprintln(os.Stderr, "\033[93m[Hint] Your local Solidity compiler (solc) version may not match the pragma version declared in your contracts.\033[0m")
+		fmt.Fprintln(os.Stderr, "\033[93m[Hint] You can install and switch compiler versions using solc-select:\033[0m")
+		fmt.Fprintln(os.Stderr, "\033[93m    pip install solc-select\033[0m")
+		fmt.Fprintln(os.Stderr, "\033[93m    solc-select install 0.8.23   # change to correct version\033[0m")
+		fmt.Fprintln(os.Stderr, "\033[93m    solc-select use 0.8.23       # change to correct version\033[0m")
+		fmt.Fprintln(os.Stderr, "\n\033[91m[Error] The compiler error snippet is shown below: \033[0m")
+		for _, l := range snippet {
+			fmt.Fprintln(os.Stderr, l)
+		}
+		_ = cmd.Process.Kill()
+		os.Exit(1)
+
+	case err := <-waitForCmd(cmd):
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\033[91m[Error] Gambit exited with error: %v\033[0m\n", err)
+			os.Exit(1)
+		}
 	}
 
 	fmt.Println("\n[Info] Mutants generated ✅")
-
-	// Post-conditions
 	assert.NotEmpty(*p.mutantsDIR)
 	assert.True(len(listSolidityFiles(*p.mutantsDIR)) > 0, "There are no Solidity files in the mutants directory after running 'gambit mutate'.")
+}
+
+// waitForCmd wraps cmd.Wait() so we can use it in a select block
+func waitForCmd(cmd *exec.Cmd) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	return done
 }
 
 func testSuitePasses(p *Program, detailedLogs bool) bool {
