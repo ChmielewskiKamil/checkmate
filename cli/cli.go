@@ -208,9 +208,6 @@ func runGambit(p *Program) {
 	assert.PathExists(*p.gambitConfigPath)
 	assert.NotEmpty(*p.gambitConfigPath)
 
-	// TODO: Before doing that validate that the dependencies listed in the
-	// gambit config actually exist. Otherwise Gambit throws weird errors.
-
 	// TODO: Before running Gambit ensure that the Solidity compiler version is
 	// set to correct version.
 
@@ -455,7 +452,9 @@ func transformForgeRemappings(forgeRemappings string) []string {
 			from := strings.TrimSpace(parts[0])
 			to := strings.TrimSpace(parts[1])
 
-			gambitRemappings = append(gambitRemappings, fmt.Sprintf("%s=%s", from, to))
+			if checkRemappingExists(to) {
+				gambitRemappings = append(gambitRemappings, fmt.Sprintf("%s=%s", from, to))
+			}
 		}
 	}
 
@@ -463,6 +462,17 @@ func transformForgeRemappings(forgeRemappings string) []string {
 	assert.True(len(gambitRemappings) > 0, "Transformed 0 gambit remappings.")
 
 	return gambitRemappings
+}
+
+func checkRemappingExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		// Path doesn't exist
+		return false
+	}
+
+	// Remapping points to a dir
+	return info.IsDir()
 }
 
 func testMutations(p *Program) error {
