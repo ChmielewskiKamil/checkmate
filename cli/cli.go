@@ -253,22 +253,22 @@ func runGambit(p *Program) {
 			if strings.Contains(line, "compiler returned exit code") ||
 				strings.Contains(line, "Source file requires different compiler version") {
 
+				// Collect the error snippet
 				if !errorPrinted {
-					// We haven't printed the error yet, now we start
+					// If it's the first match, print the error and collect further lines
 					snippet = append(snippet, line)
 					linesAfterMatch = 0
 					errorPrinted = true
 				} else {
-					// If we've already printed the error, skip printing again
-					continue
+					// Continue collecting the error lines
+					snippet = append(snippet, line)
 				}
-			}
-
-			if len(snippet) > 0 && linesAfterMatch < snippetLines {
+			} else if len(snippet) > 0 && linesAfterMatch < snippetLines {
+				// Collect the following lines for the snippet
 				snippet = append(snippet, line)
 				linesAfterMatch++
 				if linesAfterMatch >= snippetLines {
-					// Stop further reading and signal fatal error
+					// Stop reading and signal fatal error
 					errDetected <- struct{}{}
 					return
 				}
