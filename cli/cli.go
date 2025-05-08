@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/ChmielewskiKamil/checkmate/assert"
 	"io"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
+
+	"github.com/ChmielewskiKamil/checkmate/assert"
 )
 
 type Program struct {
@@ -94,6 +96,8 @@ func Run(p *Program) error {
 }
 
 func parseCmdFlags(p *Program) {
+	versionFlag := flag.Bool("version", false, "Print the version and exit")
+
 	testCMD := flag.String(
 		"test-command",
 		"forge test --fail-fast",
@@ -123,6 +127,21 @@ func parseCmdFlags(p *Program) {
 	)
 
 	flag.Parse()
+
+	if *versionFlag {
+		info, ok := debug.ReadBuildInfo()
+		if ok {
+			version := info.Main.Version
+			if version == "(devel)" || version == "" {
+				fmt.Println("dev (not built from tagged release)")
+			} else {
+				fmt.Println(version)
+			}
+		} else {
+			fmt.Println("Unknown version. You might be building locally. Version will show if you downloaded via `go install`.")
+		}
+		os.Exit(0)
+	}
 
 	p.testCMD = testCMD
 	p.mutantsDIR = mutantsDIR
