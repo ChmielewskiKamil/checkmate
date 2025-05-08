@@ -71,6 +71,10 @@ func Run(p *Program) error {
 			fmt.Println("\033[33m[Info] Generated gambit config successfuly.\n       Please review it and remove any files that you don't intend to test e.g. interfaces.\n       This will speed up the time it takes for gambit to generate the mutants and later\n       to run the analysis. After that re-run checkmate.\033[0m")
 			os.Exit(0)
 		}
+
+		// TODO: Before running Gambit ensure that the Solidity compiler version is
+		// set to correct version.
+
 		runGambit(p)
 	}
 
@@ -226,9 +230,6 @@ func runGambit(p *Program) {
 	// Pre-conditions
 	assert.PathExists(*p.gambitConfigPath)
 	assert.NotEmpty(*p.gambitConfigPath)
-
-	// TODO: Before running Gambit ensure that the Solidity compiler version is
-	// set to correct version.
 
 	// Actions
 	cmd := exec.Command("gambit", "mutate", "--json", *p.gambitConfigPath)
