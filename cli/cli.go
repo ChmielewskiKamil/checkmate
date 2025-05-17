@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/ChmielewskiKamil/checkmate/assert"
+	"github.com/ChmielewskiKamil/checkmate/llm"
 )
 
 type Program struct {
@@ -30,6 +31,7 @@ type Program struct {
 	gambitConfigPath *string // Path to gambit's config json file
 	skipGambit       *bool   // If you don't have or don't want to run gambit, skip it.
 	contractsDIR     *string // Path to the folder where Solidity contracts are store. Default is "src/".
+	analyzeMutations *bool   // Whether to analyze mutations with LLM or not
 }
 
 type SolidityFile struct {
@@ -61,6 +63,15 @@ func New() *Program {
 
 func Run(p *Program) error {
 	// Pre-conditions
+
+	if *p.analyzeMutations {
+		err := analyzeMutations()
+		if err != nil {
+			return err
+		}
+		fmt.Println("[Info] Analyzed the mutations.")
+		os.Exit(0)
+	}
 
 	// Actions
 	if !mutantsExist(p) && !*p.skipGambit {
@@ -131,6 +142,12 @@ func parseCmdFlags(p *Program) {
 		"Specify the path to the folder with your smart contracts. For hardhat repositories this is usually './contracts'.",
 	)
 
+	analyzeMutations := flag.Bool(
+		"analyze",
+		false,
+		"Analyze the mutations present in the gambit_out/mutants/ directory with the help of an LLM.",
+	)
+
 	flag.Parse()
 
 	if *versionFlag {
@@ -153,6 +170,7 @@ func parseCmdFlags(p *Program) {
 	p.skipGambit = skipGambit
 	p.gambitConfigPath = gambitConfigPath
 	p.contractsDIR = contractFilesPath
+	p.analyzeMutations = analyzeMutations
 
 	// Post-conditions
 	// TODO: Gambit config should be a valid json file
@@ -622,6 +640,19 @@ func testMutations(p *Program) error {
 		}
 	}
 
+	return nil
+}
+
+func analyzeMutations() error {
+	fmt.Println("[Info] Analyzing mutation...")
+	analysisResult, err := llm.AnalyzeMutation()
+	if err != nil {
+		return fmt.Errorf("[Error] Error analyzing mutation: %v", err)
+	}
+
+	fmt.Println("\n--- LLM Analysis Result ---")
+	fmt.Println(analysisResult)
+	fmt.Println("---------------------------")
 	return nil
 }
 
