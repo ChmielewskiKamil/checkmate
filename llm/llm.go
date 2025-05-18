@@ -8,7 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"path/filepath"
+	"path"
 	"text/template"
 	"time"
 )
@@ -18,7 +18,7 @@ import (
 //go:embed prompts/base_system_prompt.md
 var basePromptTemplateString string
 
-//go:embed prompts/snippets/*/*.md
+//go:embed prompts/snippets
 var snippetRootFS embed.FS
 
 // Global template object, parsed once for efficiency
@@ -71,7 +71,7 @@ func AnalyzeMutation(ctx MutationAnalysisContext) (string, error) {
 		return "", fmt.Errorf("[Error] Failure loading embedded system prompts: %s", err)
 	}
 
-	fmt.Println(customizedSystemPrompt)
+	// fmt.Println(customizedSystemPrompt)
 
 	userContent := fmt.Sprintf(
 		"Mutation Type: %s\n\nCode Diff:\n```diff\n%s\n```\n\nFunction Context:\n```solidity\n%s\n```",
@@ -80,7 +80,7 @@ func AnalyzeMutation(ctx MutationAnalysisContext) (string, error) {
 		ctx.MutationContext,
 	)
 
-	fmt.Println(userContent)
+	// fmt.Println(userContent)
 
 	// 4. Construct the API request payload
 	apiRequest := APIRequest{
@@ -120,6 +120,10 @@ func AnalyzeMutation(ctx MutationAnalysisContext) (string, error) {
 
 	// 7. Extract and return the assistant's message
 	if len(apiResponse.Choices) > 0 && apiResponse.Choices[0].Message.Role == "assistant" {
+		fmt.Println("\n--- LLM Analysis Result ---")
+		fmt.Printf("\033[33m" + apiResponse.Choices[0].Message.Content + "\033[0m" + "\n")
+		fmt.Println("---------------------------")
+
 		return apiResponse.Choices[0].Message.Content, nil
 	}
 
@@ -128,11 +132,13 @@ func AnalyzeMutation(ctx MutationAnalysisContext) (string, error) {
 
 // Helper function to read a snippet file
 func readSnippet(snippetDir fs.FS, mutationKey, snippetName string) (string, error) {
-	// Construct path like "snippets/BinaryOpMutation/examples.md"
+	// This part forms the path segment relative to the "prompts/snippets" directory
+	// e.g., "BinaryOpMutation/comment_marker.md"
+	relativePathWithinSnippetsSubDir := path.Join(mutationKey, snippetName)
 
-	filePath := filepath.Join(mutationKey, snippetName)
-
-	content, err := fs.ReadFile(snippetDir, filePath)
+	// Prepend the "prompts/snippets/" prefix because snippetRootFS contains paths starting with it
+	fullPathInFS := path.Join("prompts/snippets", relativePathWithinSnippetsSubDir)
+	content, err := fs.ReadFile(snippetDir, fullPathInFS)
 	if err != nil {
 		return "", err
 	}
@@ -144,10 +150,34 @@ func getCustomSystemPrompt(mutationTypeKey string) (string, error) {
 		MutationTypeName: mutationTypeKey,
 	}
 
+	commentMarker, err := readSnippet(snippetRootFS, mutationTypeKey, "comment_marker.md")
+	if err != nil {
+		return "", fmt.Errorf("Could not read the comment_marker.md snippet for %s: %s.", mutationTypeKey, err)
+	}
+	data.CommentMarker = commentMarker
+
+	mutationTypeExplainer, err := readSnippet(snippetRootFS, mutationTypeKey, "mutation_type_explainer.md")
+	if err != nil {
+		return "", fmt.Errorf("Could not read the mutation_type_explainer.md snippet for %s: %s.", mutationTypeKey, err)
+	}
+	data.MutationTypeExplainer = mutationTypeExplainer
+
+	taskDefinition, err := readSnippet(snippetRootFS, mutationTypeKey, "task_definition.md")
+	if err != nil {
+		return "", fmt.Errorf("Could not read the task_definition.md snippet for %s: %s.", mutationTypeKey, err)
+	}
+	data.TaskDefinition = taskDefinition
+
+	examples, err := readSnippet(snippetRootFS, mutationTypeKey, "examples.md")
+	if err != nil {
+		return "", fmt.Errorf("Could not read the examples.md snippet for %s: %s.", mutationTypeKey, err)
+	}
+	data.FewShotExamples = examples
+
 	var populatedPrompt bytes.Buffer
 
 	if err := systemPromptTmpl.Execute(&populatedPrompt, data); err != nil {
-		return "", fmt.Errorf("[Error] Failed to execute system prompt template for %s: %w", mutationTypeKey, err)
+		return "", fmt.Errorf("Failed to execute system prompt template for %s: %w", mutationTypeKey, err)
 	}
 
 	return populatedPrompt.String(), nil

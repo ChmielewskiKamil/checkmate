@@ -95,14 +95,11 @@ func AnalyzeMutations(mutantsDirPath string) error {
 		}
 
 		// 2. Analyze Mutation with context
-		analysisResult, err := AnalyzeMutation(mutationContext)
+		_, err = AnalyzeMutation(mutationContext)
 		if err != nil {
 			return fmt.Errorf("[Error] Error analyzing mutation: %v", err)
 		}
 
-		fmt.Println("\n--- LLM Analysis Result ---")
-		fmt.Println("OUTPUT: ", analysisResult)
-		fmt.Println("---------------------------")
 		// 3. Save result
 	}
 
