@@ -8,14 +8,37 @@ generated mutations. The goal of Checkmate is to provide a hands-off experience
 for security researchers and developers to run a single command, go do something
 else and come back to see the analysis results.
 
-### TLDR;
+### Pre-requisites
 
-1. Install Checkmate with: `go install github.com/ChmielewskiKamil/checkmate@latest`
-2. `cd` into your Solidity's project root and run `checkmate`
-3. Wait and reap the benefits (for large repos this might take a couple of hours
-   to run from start to finish)
+- You must have Certora's [Gambit](https://github.com/Certora/gambit) installed.
+- You must have something to manage your local solidity compiler version. For
+  example [solc-select](https://github.com/crytic/solc-select) from Trail of
+  Bits.
 
-**IMPORTANT**: If you want to generate mutants with gambit as well, make sure
-that you have [Gambit](https://github.com/Certora/gambit) installed since
-`checkmate` calls `gambit mutate --json gambit_config.json`.
+### Installation
 
+#### Using `go install`
+
+You can use the go's toolchain to install `checkmate`. Install it with:
+```shell
+`go install github.com/ChmielewskiKamil/checkmate@latest`
+```
+
+#### Building from source
+
+Review the content of this repo do git clone and go build.
+
+### Usage
+
+Navigate to the project that you want to analyze. 
+
+The usage of Checkmate is split in two stages. When you run the `checkmate`
+for the first time it will generate you the `gambit_config.json` file. This is
+what Gambit requires to generate the modified versions of your code (mutants).
+When using Gambit alone the config generation is time consuming as you have to
+configure the remappings and select the files that you want to analyze.
+Checkmate is doing that for you.
+
+Once the config is generated you can run the `checkmate` command for the second
+time. This time it will see that `gambit_config.json` is ready and will attempt
+to generate the mutations.
