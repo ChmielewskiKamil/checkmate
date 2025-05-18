@@ -81,7 +81,7 @@ func AnalyzeMutation() (string, error) {
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userContent},
 		},
-		Temperature: 0.0,
+		Temperature: 0.7,
 		MaxTokens:   -1, // No limit
 	}
 
