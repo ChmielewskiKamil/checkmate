@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 //go:embed system_prompt.md
@@ -90,6 +91,7 @@ func AnalyzeMutation() (string, error) {
 	}
 
 	// 5. Make the HTTP POST request
+	defer TrackTime(time.Now(), "Calling an LLM")
 	llmEndpoint := "http://127.0.0.1:1234/v1/chat/completions"
 	resp, err := http.Post(llmEndpoint, "application/json", bytes.NewBuffer(requestBody))
 	if err != nil {
@@ -114,4 +116,13 @@ func AnalyzeMutation() (string, error) {
 	}
 
 	return "", fmt.Errorf("no valid assistant message found in response. Full response: %+v", apiResponse)
+}
+
+// TrackTime can be used to print the elapsed time it took for a function call
+// to perform some logic. Use it with defer keyword before a function call that
+// you want to measure. E.g. `defer TrackTime(time.Now(), "Calling an LLM")`
+// will print "[Info] Calling an LLM took 25.46 seconds."
+func TrackTime(now time.Time, description string) {
+	elapsed := time.Since(now).Seconds()
+	fmt.Printf("[Info] %s took %.2f seconds.", description, elapsed)
 }
