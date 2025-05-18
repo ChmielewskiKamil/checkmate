@@ -2,16 +2,44 @@ package llm
 
 import (
 	"bytes"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	"path/filepath"
+	"text/template"
 	"time"
 )
 
-//go:embed system_prompt.md
-var systemPrompt string
+// --- Embedding Templates and Snippets ---
+
+//go:embed prompts/base_system_prompt.md
+var basePromptTemplateString string
+
+//go:embed prompts/snippets/*/*.md
+var snippetRootFS embed.FS
+
+// Global template object, parsed once for efficiency
+var systemPromptTmpl *template.Template
+
+func init() {
+	var err error
+	systemPromptTmpl, err = template.New("systemPrompt").Parse(basePromptTemplateString)
+	if err != nil {
+		panic(fmt.Errorf("failed to parse base system prompt template: %w", err))
+	}
+}
+
+// PromptTemplateData is the data structrue passed to the template
+type PromptTemplateData struct {
+	MutationTypeName      string
+	FewShotExamples       string
+	MutationTypeExplainer string
+	CommentMarker         string
+	TaskDefinition        string
+}
 
 // APIRequest represents the structure of the request payload for the LLM API.
 type APIRequest struct {
@@ -37,39 +65,19 @@ type APIResponse struct {
 }
 
 // AnalyzeMutation constructs and sends a request to the local LLM API.
-func AnalyzeMutation() (string, error) {
-	// 1. System prompt is embeded into the binary.
-	// 2. Hardcoded function context, diff, and mutation type
-	functionContext := `
-    // @notice See Governor.sol replicates the logic to handle modified calldata from hooks
-    function _queueOperations(
-        uint256 proposalId,
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        bytes32 descriptionHash
-    ) internal virtual override returns (uint48) {
-        uint256 delay = _timelock.getMinDelay();
+func AnalyzeMutation(ctx MutationAnalysisContext) (string, error) {
+	customizedSystemPrompt, err := getCustomSystemPrompt(ctx.MutationType)
+	if err != nil {
+		return "", fmt.Errorf("[Error] Failure loading embedded system prompts: %s", err)
+	}
 
-        bytes32 salt = _timelockSalt(descriptionHash);
-        _timelockIds[proposalId] = _timelock.hashOperationBatch(targets, values, calldatas, 0, salt);
-        _timelock.scheduleBatch(targets, values, calldatas, 0, salt, delay);
+	fmt.Println(customizedSystemPrompt)
 
-        /// BinaryOpMutation('+' |==> '*') of: 'return SafeCast.toUint48(block.timestamp + delay);'
-        return SafeCast.toUint48(block.timestamp*delay);
-    }
-    `
-
-	diff := `--- original\n+++ mutant\n@@ -374,7 +374,8 @@\n         _timelockIds[proposalId] = _timelock.hashOperationBatch(targets, values, calldatas, 0, salt);\n         _timelock.scheduleBatch(targets, values, calldatas, 0, salt, delay);\n \n-        return SafeCast.toUint48(block.timestamp + delay);\n+        /// BinaryOpMutation('+' |==> '*') of: 'return SafeCast.toUint48(block.timestamp + delay);'\n+        return SafeCast.toUint48(block.timestamp*delay);\n     }\n \n     // @notice See Governor.sol replicates the logic to handle modified calldata from hooks\n"`
-
-	mutationType := "BinaryOpMutation"
-
-	// 3. Construct the user prompt content
 	userContent := fmt.Sprintf(
-		"Mutation Type: %s\n\nCode Diff:\n```diff%s\n```\n\nFunction Context:\n```solidity%s\n```",
-		mutationType,
-		diff,
-		functionContext,
+		"Mutation Type: %s\n\nCode Diff:\n```diff\n%s\n```\n\nFunction Context:\n```solidity\n%s\n```",
+		ctx.MutationType,
+		ctx.MutationDiff,
+		ctx.MutationContext,
 	)
 
 	fmt.Println(userContent)
@@ -78,10 +86,10 @@ func AnalyzeMutation() (string, error) {
 	apiRequest := APIRequest{
 		Model: "deepseek-r1-distill-qwen-7b",
 		Messages: []Message{
-			{Role: "system", Content: systemPrompt},
+			{Role: "system", Content: customizedSystemPrompt},
 			{Role: "user", Content: userContent},
 		},
-		Temperature: 0.7,
+		Temperature: 0.3,
 		MaxTokens:   -1, // No limit
 	}
 
@@ -118,11 +126,38 @@ func AnalyzeMutation() (string, error) {
 	return "", fmt.Errorf("no valid assistant message found in response. Full response: %+v", apiResponse)
 }
 
+// Helper function to read a snippet file
+func readSnippet(snippetDir fs.FS, mutationKey, snippetName string) (string, error) {
+	// Construct path like "snippets/BinaryOpMutation/examples.md"
+
+	filePath := filepath.Join(mutationKey, snippetName)
+
+	content, err := fs.ReadFile(snippetDir, filePath)
+	if err != nil {
+		return "", err
+	}
+	return string(content), err
+}
+
+func getCustomSystemPrompt(mutationTypeKey string) (string, error) {
+	data := PromptTemplateData{
+		MutationTypeName: mutationTypeKey,
+	}
+
+	var populatedPrompt bytes.Buffer
+
+	if err := systemPromptTmpl.Execute(&populatedPrompt, data); err != nil {
+		return "", fmt.Errorf("[Error] Failed to execute system prompt template for %s: %w", mutationTypeKey, err)
+	}
+
+	return populatedPrompt.String(), nil
+}
+
 // TrackTime can be used to print the elapsed time it took for a function call
 // to perform some logic. Use it with defer keyword before a function call that
 // you want to measure. E.g. `defer TrackTime(time.Now(), "Calling an LLM")`
 // will print "[Info] Calling an LLM took 25.46 seconds."
 func TrackTime(now time.Time, description string) {
 	elapsed := time.Since(now).Seconds()
-	fmt.Printf("[Info] %s took %.2f seconds.", description, elapsed)
+	fmt.Printf("[Info] %s took %.2f seconds.\n", description, elapsed)
 }

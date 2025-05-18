@@ -65,7 +65,7 @@ func Run(p *Program) error {
 	// Pre-conditions
 
 	if *p.analyzeMutations {
-		err := analyzeMutations()
+		err := llm.AnalyzeMutations(*p.mutantsDIR)
 		if err != nil {
 			return err
 		}
@@ -640,19 +640,6 @@ func testMutations(p *Program) error {
 		}
 	}
 
-	return nil
-}
-
-func analyzeMutations() error {
-	fmt.Println("[Info] Analyzing mutation...")
-	analysisResult, err := llm.AnalyzeMutation()
-	if err != nil {
-		return fmt.Errorf("[Error] Error analyzing mutation: %v", err)
-	}
-
-	fmt.Println("\n--- LLM Analysis Result ---")
-	fmt.Println(analysisResult)
-	fmt.Println("---------------------------")
 	return nil
 }
 
