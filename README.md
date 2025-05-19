@@ -16,18 +16,58 @@ else and come back to see the analysis results.
   example [solc-select](https://github.com/crytic/solc-select) from Trail of
   Bits.
 
-### Installation
+### Install, upgrade or remove `checkmate` from your system
 
 #### Using `go install`
 
 You can use the go's toolchain to install `checkmate`. Install it with:
 ```shell
-`go install github.com/ChmielewskiKamil/checkmate@latest`
+go install github.com/ChmielewskiKamil/checkmate@latest
 ```
 
 #### Building from source
 
-Review the content of this repo do git clone and go build.
+Review the content of this repo, clone it and run `go build`.
+
+#### Upgrading your current version of `checkmate`
+
+Check your version with:
+```shell
+checkmate --version
+```
+
+Upgrade with:
+```shell
+go install github.com/ChmielewskiKamil/checkmate@latest
+```
+
+#### Uninstalling `checkmate`
+
+Removing `checkmate` from your OS is similar to other standalone Go binaries.
+
+##### Linux/MacOS
+
+List files to confirm `checkmate` is in the default location for Go binaries.
+
+```shell
+ls $HOME/go/bin
+```
+
+```shell
+rm $HOME/go/bin/checkmate
+```
+
+##### Windows
+List files to confirm 'checkmate.exe' is in the default location for Go
+binaries.
+
+```shell
+dir %USERPROFILE%\go\bin 
+```
+
+```shell
+del %USERPROFILE%\go\bin\checkmate.exe
+```
 
 ### Usage
 
