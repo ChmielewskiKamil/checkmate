@@ -43,3 +43,17 @@ Checkmate is doing that for you.
 Once the config is generated you can run the `checkmate` command for the second
 time. This time it will see that `gambit_config.json` is ready and will attempt
 to generate the mutations.
+
+### Using a local LLM to analyze the results
+
+The `Qwen2.5-Coder-7B-Instruct` gives superior output and is fast. On an M1
+MacBook Pro with 16 GBs of RAM it is able to analyze each missing test case in
+~20 seconds. 
+
+#### Other tested models
+
+- `DeepSeek-R1-Distill-Qwen-7B` gives decent results but is slow. It takes 
+  ~40-60 seconds to analyze a missing test case. This is a thinking model so it
+  also prints the thought process output. The output format is unreliable and
+  relatively hard to control while the `Qwen2.5-Coder-7B-Instruct` one-shots
+  each test case even without examples.
