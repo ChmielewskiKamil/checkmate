@@ -53,7 +53,7 @@
 
 ###Desired_Output###
 
-In the `afterCancel(...)` function, the condition `module != address(0)` can be
+In the `afterCancel(...)` function, the `if` statement condition: `module != address(0)` can be
 hardcoded to `false` without affecting the test suite. Consider adding test
 cases for the logic executed in the `if` branch of this statement.
 
@@ -113,6 +113,6 @@ Function Context:
 
 ###Desired_Output###
 
-In the `afterCancel(...)` function, the condition `module != address(0)` can be
+In the `beforeCancel(...)` function, the `if` statement condition: `result.length != 64` can be
 hardcoded to `false` without affecting the test suite. Consider adding test
-cases for the logic executed in the `if` branch of this statement.
+cases for the revert with the `InvalidHookResponse` error.
