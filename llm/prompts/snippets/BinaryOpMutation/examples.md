@@ -50,6 +50,53 @@
 
 ###Desired_Output###
 
-In the `_queueOperations(...)` function the addition in the return statement can
-be changed to multiplication with no effect on the test suite. Consider adding
-test cases around the return value of this function.
+In the `_queueOperations(...)` function, the addition in the return statement `block.timestamp + deadline` can
+be changed to multiplication without affecting the test suite. Consider adding
+test cases for the expected return value of this function.
+
+
+**Example 2**:
+
+**Input Code Diff**:
+```diff
+--- original
++++ mutant
+@@ -275,7 +275,8 @@
+      */
+     function fillEthWithdrawBuffer() external payable nonReentrant onlyDepositQueue {
+         uint256 queueFilled = _checkAndFillWithdrawQueue(IS_NATIVE, msg.value);
+-        emit EthBufferFilled(msg.value - queueFilled);
++        /// BinaryOpMutation(`-` |==> `*`) of: `emit EthBufferFilled(msg.value - queueFilled);`
++        emit EthBufferFilled(msg.value*queueFilled);
+     }
+
+     /**
+
+```
+
+**Input Function Context**:
+```solidity
+
+        // return total deficit
+        return bufferDeficit + queueDeficit;
+    }
+
+    /**
+     * @notice  fill Eth WithdrawBuffer from RestakeManager deposits
+     * @dev     permissioned call (onlyDepositQueue)
+     */
+    function fillEthWithdrawBuffer() external payable nonReentrant onlyDepositQueue {
+        uint256 queueFilled = _checkAndFillWithdrawQueue(IS_NATIVE, msg.value);
+        /// BinaryOpMutation(`-` |==> `*`) of: `emit EthBufferFilled(msg.value - queueFilled);`
+        emit EthBufferFilled(msg.value*queueFilled);
+    }
+
+    /**
+     * @notice  Fill ERC20 token withdraw buffer from RestakeManager deposits
+```
+
+###Desired_Output###
+
+In the `fillEthWithdrawBuffer(...)` function, the subtraction in the `EthBufferFilled(msg.value - queueFilled)`
+event emission can be changed to multiplication without affecting the test
+suite. Consider adding test cases for the expected value emitted by this event.

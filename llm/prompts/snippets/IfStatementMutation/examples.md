@@ -60,7 +60,7 @@ cases for the logic executed in the `if` branch of this statement.
 
 **Example 2**:
 
-Code Diff:
+**Input Code Diff**:
 ```diff
 --- original
 +++ mutant
@@ -76,7 +76,7 @@ Code Diff:
              returnedProposalId = parseUint256(result);
 ```
 
-Function Context:
+**Input Function Context**:
 ```solidity
         uint256[] memory values,
         bytes[] memory calldatas,
@@ -116,3 +116,64 @@ Function Context:
 In the `beforeCancel(...)` function, the `if` statement condition: `result.length != 64` can be
 hardcoded to `false` without affecting the test suite. Consider adding test
 cases for the revert with the `InvalidHookResponse` error.
+
+
+**Example 3**:
+
+**Input Code Diff**:
+```diff
+--- original
++++ mutant
+@@ -256,7 +256,8 @@
+
+         // Ensure there is no TVL for the specified token in the Operator Delegators
+         for (uint i = 0; i < operatorDelegatorTokenTVLs.length; ) {
+-            if (operatorDelegatorTokenTVLs[i][collateralTokenIndex] > 0) {
++            /// IfStatementMutation(`operatorDelegatorTokenTVLs[i][collateralTokenIndex] > 0` |==> `false`) of: `if (operatorDelegatorTokenTVLs[i][collateralTokenIndex] > 0) {`
++            if (false) {
+                 revert InvalidTVL();
+             }
+             unchecked {
+
+```
+
+**Input Function Context**:
+```solidity
+        // Verify the token has 18 decimal precision - pricing calculations will be off otherwise
+        if (IERC20Metadata(address(_newCollateralToken)).decimals() != 18)
+            revert InvalidTokenDecimals(
+                18,
+                IERC20Metadata(address(_newCollateralToken)).decimals()
+            );
+
+        // Add it to the list
+        collateralTokens.push(_newCollateralToken);
+
+        emit CollateralTokenAdded(_newCollateralToken);
+    }
+
+    /// @dev Allows restake manager to remove a collateral token
+    function removeCollateralToken(
+        IERC20 _collateralTokenToRemove
+    ) external onlyRestakeManagerAdmin {
+        // Get the token index - will revert if not found
+        uint256 collateralTokenIndex = getCollateralTokenIndex(_collateralTokenToRemove);
+
+        // Get the token TVLs of the ODs
+        (uint256[][] memory operatorDelegatorTokenTVLs, , ) = calculateTVLs();
+
+        // Ensure there is no TVL for the specified token in the Operator Delegators
+        for (uint i = 0; i < operatorDelegatorTokenTVLs.length; ) {
+            /// IfStatementMutation(`operatorDelegatorTokenTVLs[i][collateralTokenIndex] > 0` |==> `false`) of: `if (operatorDelegatorTokenTVLs[i][collateralTokenIndex] > 0) {`
+            if (false) {
+                revert InvalidTVL();
+            }
+            unchecked {
+                ++i;
+```
+
+###Desired_Output###
+
+In the `removeCollateralToken(...)` function, the `if` statement condition: `operatorDelegatorTokenTVLs[i][collateralTokenIndex] > 0` can be
+hardcoded to `false` without affecting the test suite. Consider adding test
+cases for the revert with the `InvalidTVL` error.
