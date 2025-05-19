@@ -10,6 +10,7 @@ else and come back to see the analysis results.
 
 ### Pre-requisites
 
+- You must have [Go >=1.23](https://go.dev/dl/) installed.
 - You must have Certora's [Gambit](https://github.com/Certora/gambit) installed.
 - You must have something to manage your local solidity compiler version. For
   example [solc-select](https://github.com/crytic/solc-select) from Trail of
