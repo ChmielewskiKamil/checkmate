@@ -80,11 +80,15 @@ func AnalyzeMutation(ctx MutationAnalysisContext) (string, error) {
 		ctx.MutationContext,
 	)
 
-	// fmt.Println(userContent)
+	fmt.Printf("\033[32m%s\033[0m", userContent)
+
+	// TODO: Before constructing the request, send GET v1/models to query
+	// available models.
 
 	// 4. Construct the API request payload
 	apiRequest := APIRequest{
-		Model: "deepseek-r1-distill-qwen-7b",
+		// Model: "deepseek-r1-distill-qwen-7b",
+		Model: "qwen2.5-coder-7b-instruct",
 		Messages: []Message{
 			{Role: "system", Content: customizedSystemPrompt},
 			{Role: "user", Content: userContent},
