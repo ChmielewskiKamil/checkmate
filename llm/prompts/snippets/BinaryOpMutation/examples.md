@@ -48,7 +48,7 @@
     function _executeOperations(
 ```
 
-###Desired_Output### (DO NOT INCLUDE THIS TAG)
+###Desired_Output###
 
 In the `_queueOperations(...)` function the addition in the return statement can
 be changed to multiplication with no effect on the test suite. Consider adding
