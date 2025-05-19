@@ -8,7 +8,22 @@ generated mutations. The goal of Checkmate is to provide a hands-off experience
 for security researchers and developers to run a single command, go do something
 else and come back to see the analysis results.
 
-### Pre-requisites
+<!--toc:start-->
+- [Checkmate - The Gambit companion](#checkmate-the-gambit-companion)
+    - [Installation pre-requisites](#installation-pre-requisites)
+    - [Installing, upgrading or removing `checkmate` from your system](#installing-upgrading-or-removing-checkmate-from-your-system)
+      - [Using `go install`](#using-go-install)
+      - [Building from source](#building-from-source)
+      - [Upgrading your current version of `checkmate`](#upgrading-your-current-version-of-checkmate)
+      - [Uninstalling `checkmate`](#uninstalling-checkmate)
+        - [Linux/MacOS](#linuxmacos)
+        - [Windows](#windows)
+    - [Usage](#usage)
+    - [Using a local LLM to analyze the results](#using-a-local-llm-to-analyze-the-results)
+      - [Other tested models](#other-tested-models)
+<!--toc:end-->
+
+### Installation pre-requisites
 
 - You must have [Go >=1.23](https://go.dev/dl/) installed.
 - You must have Certora's [Gambit](https://github.com/Certora/gambit) installed.
@@ -16,7 +31,7 @@ else and come back to see the analysis results.
   example [solc-select](https://github.com/crytic/solc-select) from Trail of
   Bits.
 
-### Install, upgrade or remove `checkmate` from your system
+### Installing, upgrading or removing `checkmate` from your system
 
 #### Using `go install`
 
@@ -58,7 +73,8 @@ rm $HOME/go/bin/checkmate
 ```
 
 ##### Windows
-List files to confirm 'checkmate.exe' is in the default location for Go
+
+List files to confirm `checkmate.exe` is in the default location for Go
 binaries.
 
 ```shell
