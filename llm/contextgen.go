@@ -198,15 +198,9 @@ func generateMutationAnalysisContext(
 	linesBefore := 25
 	linesAfter := 5
 
-	start := markerLineIndex - linesBefore
-	if start < 0 {
-		start = 0
-	}
+	start := max(markerLineIndex-linesBefore, 0)
 
-	end := markerLineIndex + linesAfter + 1 // +1 to include the Nth line after, and slicing is exclusive at 'end'
-	if end > len(lines) {
-		end = len(lines)
-	}
+	end := min(markerLineIndex+linesAfter+1, len(lines))
 
 	// Ensure 'start' is not greater than 'end', which can happen for very small files
 	// or if markerLineIndex is near the beginning/end with large before/after counts.
