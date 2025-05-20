@@ -68,7 +68,7 @@ type APIResponse struct {
 func AnalyzeMutation(ctx MutationAnalysisContext) (string, error) {
 	customizedSystemPrompt, err := getCustomSystemPrompt(ctx.MutationType)
 	if err != nil {
-		return "", fmt.Errorf("[Error] Failure loading embedded system prompts: %s", err)
+		return "", fmt.Errorf("Failure loading embedded system prompts: %s", err)
 	}
 
 	// fmt.Println(customizedSystemPrompt)
