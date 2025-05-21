@@ -117,11 +117,17 @@ func Run(p *Program) (err error) {
 	// ---- LLM Analysis Mode ----
 	if *p.analyzeMutations {
 		fmt.Println("[Info] LLM Analysis mode selected.")
-		// TODO: Refactor the LLM package to utilize the dbState
-		llmErr := llm.AnalyzeMutations(*p.mutantsDIR /*, &p.dbState */)
+
+		llmErr := llm.AnalyzeMutations(
+			*p.mutantsDIR,      // Path to the mutants directory (e.g., ./gambit_out/mutants)
+			&p.dbState,         // Pointer to the persistent state object
+			db.SaveStateToFile, // The actual save function
+			stateFileName,      // The name of the state file
+		)
 		if llmErr != nil {
-			return fmt.Errorf("LLM analysis failed: %w", llmErr)
+			return fmt.Errorf("LLM analysis failed: %w", llmErr) // Propagate error
 		}
+
 		fmt.Println("[Info] LLM Analysis completed.")
 		return nil // LLM analysis mode finishes here
 	}
@@ -215,9 +221,18 @@ func initializeGeneratedMutantStats(p *Program) {
 		for path, count := range tempPerFileGenerated {
 			entry, ok := p.dbState.AnalyzedFiles[path]
 			if !ok {
-				entry = db.AnalyzedFile{FileSpecificStats: db.FileSpecificStats{}}
-				if entry.FileSpecificRecommendations == nil { // Initialize slice
-					entry.FileSpecificRecommendations = []string{}
+				entry = db.AnalyzedFile{
+					FileSpecificStats:           db.FileSpecificStats{},
+					FileSpecificRecommendations: make([]string, 0),
+					LLMAnalysisOutcomes:         make(map[string]db.MutantLLMAnalysisOutcome),
+				}
+			} else {
+				// If entry exists from loaded state, ensure sub-maps/slices are not nil
+				if entry.FileSpecificRecommendations == nil {
+					entry.FileSpecificRecommendations = make([]string, 0)
+				}
+				if entry.LLMAnalysisOutcomes == nil {
+					entry.LLMAnalysisOutcomes = make(map[string]db.MutantLLMAnalysisOutcome)
 				}
 			}
 			entry.FileSpecificStats.MutantsTotalGenerated = count
