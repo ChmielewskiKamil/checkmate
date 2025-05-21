@@ -100,3 +100,62 @@ test cases for the expected return value of this function.
 In the `fillEthWithdrawBuffer(...)` function, the subtraction in the `EthBufferFilled(msg.value - queueFilled)`
 event emission can be changed to multiplication without affecting the test
 suite. Consider adding test cases for the expected value emitted by this event.
+
+
+**Example 3**:
+
+**Input Code Diff**:
+```diff
+--- original
++++ mutant
+@@ -105,7 +105,8 @@
+
+             // check the last price
+             (, int256 price, , uint256 timestamp, ) = stETHSecondaryOracle.latestRoundData();
+-            if (timestamp < block.timestamp - MAX_TIME_WINDOW) revert OraclePriceExpired();
++            /// BinaryOpMutation(`-` |==> `/`) of: `if (timestamp < block.timestamp - MAX_TIME_WINDOW) revert OraclePriceExpired();`
++            if (timestamp < block.timestamp/MAX_TIME_WINDOW) revert OraclePriceExpired();
+             if (price <= 0) revert InvalidOraclePrice();
+
+             // Price is times 10**18 ensure value amount is scaled
+
+```
+
+**Input Function Context**:
+```solidity
+        AggregatorV3Interface _oracleAddress
+    ) external nonReentrant onlyOracleAdmin {
+        // Verify that the pricing of the oracle is 18 decimals - pricing calculations will be off otherwise
+        if (_oracleAddress.decimals() != 18)
+            revert InvalidTokenDecimals(18, _oracleAddress.decimals());
+
+        stETHSecondaryOracle = _oracleAddress;
+        emit StETHSecondaryOracleUpdated(_oracleAddress);
+    }
+
+    /**
+     * @notice  calculate stETH value in terms of ETH through market rate~
+     * @param   _balance  amount of stETH to convert in ETH
+     * @return  uint256  stETH value in ETH through secondary exchange rate (DEX price)
+     */
+    function lookupTokenSecondaryValue(
+        IERC20 _token,
+        uint256 _balance
+    ) public view returns (uint256) {
+        if (_token == stETH) {
+            // if stETH secondary Oracle is not set then return 1:1
+            if (address(stETHSecondaryOracle) == address(0)) return _balance;
+
+            // check the last price
+            (, int256 price, , uint256 timestamp, ) = stETHSecondaryOracle.latestRoundData();
+            /// BinaryOpMutation(`-` |==> `/`) of: `if (timestamp < block.timestamp - MAX_TIME_WINDOW) revert OraclePriceExpired();`
+            if (timestamp < block.timestamp/MAX_TIME_WINDOW) revert OraclePriceExpired();
+            if (price <= 0) revert InvalidOraclePrice();
+
+            // Price is times 10**18 ensure value amount is scaled
+            return (uint256(price) * _balance) / SCALE_FACTOR;
+```
+
+###Desired_Output###
+
+In the `lookupTokenSecondaryValue(...)` function, the subtraction in the condition `if (timestamp < block.timestamp - MAX_TIME_WINDOW)` can be changed to division without affecting the test suite. Consider adding test cases for the expected behavior of the `OraclePriceExpired` revert condition.
