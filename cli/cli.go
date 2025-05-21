@@ -552,8 +552,8 @@ func printMutationStats(p *Program) {
 				for _, rec := range fileData.FileSpecificRecommendations {
 					fmt.Printf("    - %s\n", rec)
 				}
+				fmt.Println()
 			}
-			fmt.Println()
 		}
 	} else {
 		fmt.Println("No per-file data available yet.")
