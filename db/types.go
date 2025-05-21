@@ -228,9 +228,11 @@ func LoadStateFromFile(filename string) (MutationAnalysis, error) {
 func initializeMutationAnalysis() MutationAnalysis {
 	return MutationAnalysis{
 		AnalyzedFiles: make(map[string]AnalyzedFile),
+		// Initialize boolans to false
 		SlayingProgress: SlayingProgress{
 			MutantsProcessed: make(map[string]bool),
 		},
+		// Initialize boolans to false
 		LanguageModelProgress: LanguageModelProgress{
 			MutantsProcessed: make(map[string]bool),
 		},

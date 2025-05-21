@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path"
@@ -15,16 +16,21 @@ import (
 	"strings"
 
 	"github.com/ChmielewskiKamil/checkmate/assert"
+	"github.com/ChmielewskiKamil/checkmate/db"
 	"github.com/ChmielewskiKamil/checkmate/llm"
 )
 
+const (
+	stateFileName = "checkmate_analysis_state.json"
+)
+
 type Program struct {
-	totalGeneratedMutants uint32
-	totalUnslainMutants   uint32
-	totalSlainMutants     uint32
-	perFileGenerated      map[string]uint32
-	perFileUnslain        map[string]uint32
-	perFileSlain          map[string]uint32
+	// totalGeneratedMutants uint32
+	// totalUnslainMutants   uint32
+	// totalSlainMutants     uint32
+	// perFileGenerated      map[string]uint32
+	// perFileUnslain        map[string]uint32
+	// perFileSlain          map[string]uint32
 
 	testCMD          *string // The command to run the test suite e.g. 'forge test'.
 	mutantsDIR       *string // Path to the directory where generated mutants are stored.
@@ -32,6 +38,10 @@ type Program struct {
 	skipGambit       *bool   // If you don't have or don't want to run gambit, skip it.
 	contractsDIR     *string // Path to the folder where Solidity contracts are store. Default is "src/".
 	analyzeMutations *bool   // Whether to analyze mutations with LLM or not
+
+	// dbState holds all persistent information, loaded from and saved to mutationAnalysisStateFile.
+	// All statistics and progress will be read from and written to this struct.
+	dbState db.MutationAnalysis
 }
 
 type SolidityFile struct {
@@ -47,33 +57,74 @@ type GambitEntry struct {
 func New() *Program {
 	p := Program{}
 
-	perFileGenerated := make(map[string]uint32)
-	p.perFileGenerated = perFileGenerated
-
-	perFileUnslain := make(map[string]uint32)
-	p.perFileUnslain = perFileUnslain
-
-	perFileSlain := make(map[string]uint32)
-	p.perFileSlain = perFileSlain
-
 	parseCmdFlags(&p)
+
+	// Load existing state or initialize a new one
+	loadedState, err := db.LoadStateFromFile(stateFileName)
+	if err != nil {
+		// This error means something went wrong beyond "file not found"
+		// (e.g., corrupt JSON, permissions).
+		log.Fatalf("[Critical] Error loading state from %s: %v. If the file is corrupt, please remove it to start fresh.", stateFileName, err)
+	}
+	p.dbState = loadedState // Assign loaded data (or fresh initialized struct if file didn't exist)
+
+	// The maps within p.dbState (like AnalyzedFiles, MutantsProcessed)
+	// are guaranteed to be non-nil by db.LoadStateFromFile's initialization logic.
+
+	fmt.Printf("[Info] Loaded analysis state from %s. Overall Mutants Generated: %d\n",
+		stateFileName, p.dbState.OverallStats.MutantsTotalGenerated)
 
 	return &p
 }
 
-func Run(p *Program) error {
+func Run(p *Program) (err error) {
+	// Attempt to save state on exit, especially if an error occurs.
+	// This is a best-effort save. A more robust solution might involve signal handling.
+	defer func() {
+		if r := recover(); r != nil {
+			// If a panic occurred, try to save state before re-panicking
+			fmt.Fprintf(os.Stderr, "[Error] Panic occurred: %v. Attempting to save state...\n", r)
+			saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
+			if saveErr != nil {
+				fmt.Fprintf(os.Stderr, "[Error] Failed to save state during panic: %v\n", saveErr)
+			} else {
+				fmt.Println("[Info] State saved successfully during panic recovery.")
+			}
+			panic(r) // Re-throw the panic
+		}
+		// If a normal error is being returned by Run, 'err' (named return) will be set.
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[Error] Run finished with error: %v. Attempting to save final state...\n", err)
+		} else {
+			fmt.Println("[Info] Run completed. Saving final state...")
+		}
+		saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
+		if saveErr != nil {
+			fmt.Fprintf(os.Stderr, "[Error] Failed to save final state to %s: %v\n", stateFileName, saveErr)
+			if err == nil { // If Run was successful but save failed, make Run return the save error
+				err = saveErr
+			}
+		} else {
+			fmt.Println("[Info] Final state saved successfully.")
+		}
+	}()
+
 	// Pre-conditions
 
+	// ---- LLM Analysis Mode ----
 	if *p.analyzeMutations {
-		err := llm.AnalyzeMutations(*p.mutantsDIR)
-		if err != nil {
-			return err
+		fmt.Println("[Info] LLM Analysis mode selected.")
+		// TODO: Refactor the LLM package to utilize the dbState
+		llmErr := llm.AnalyzeMutations(*p.mutantsDIR /*, &p.dbState */)
+		if llmErr != nil {
+			return fmt.Errorf("LLM analysis failed: %w", llmErr)
 		}
-		fmt.Println("[Info] Analyzed the mutations.")
-		os.Exit(0)
+		fmt.Println("[Info] LLM Analysis completed.")
+		return nil // LLM analysis mode finishes here
 	}
 
 	// Actions
+	// ---- Slaying Mode ----
 	if !mutantsExist(p) && !*p.skipGambit {
 		if !gambitConfigExists(p) {
 			err := generateGambitConfig(p)
@@ -81,34 +132,122 @@ func Run(p *Program) error {
 				return err
 			}
 			fmt.Println("\033[33m[Info] Generated gambit config successfuly.\n       Please review it and remove any files that you don't intend to test e.g. interfaces.\n       This will speed up the time it takes for gambit to generate the mutants and later\n       to run the analysis. After that re-run checkmate.\033[0m")
-			os.Exit(0)
+			return nil
 		}
 
 		// TODO: Before running Gambit ensure that the Solidity compiler version is
 		// set to correct version.
 
-		runGambit(p)
+		runGambit(p) // This generates mutants
+
 	}
+
+	initializeGeneratedMutantStats(p)
 
 	fmt.Println("[Info] Attempting an initial test run to check if your test suite is ready for the mutation analysis.")
 	if !testSuitePasses(p, true) {
-		return fmt.Errorf(`[Error] Your test suite fails the initial run.
+		return fmt.Errorf(`Your test suite fails the initial run.
         The test suite must be passing when the code is not mutated yet!
         Ensure that you have no failing tests before you attempt mutation testing your code.`)
 	}
 
-	saveMutationStats(p)
 	printMutationStats(p)
 
-	err := testMutations(p)
-	if err != nil {
-		return err
+	testErr := testMutations(p)
+	if testErr != nil {
+		return fmt.Errorf("Testing mutations failed: %w", testErr)
 	}
 
-	saveMutationStats(p)
 	printMutationStats(p)
+	fmt.Println("[Info] Mutation analysis completed.")
+
 	// Post-conditions
+
 	return nil
+}
+
+func initializeGeneratedMutantStats(p *Program) {
+	fmt.Println("[Info] Initializing mutant stats in persistent state...")
+
+	mutants := listSolidityFiles(*p.mutantsDIR)
+
+	if len(mutants) == 0 && p.dbState.OverallStats.MutantsTotalGenerated == 0 {
+		fmt.Println("\033[33m[Warning] No mutants found in directory and no prior state. Nothing to initialize.\033[0m")
+		return
+	}
+
+	// Only initialize if not already meaningfully populated (e.g. from a previous run)
+	if p.dbState.OverallStats.MutantsTotalGenerated == 0 {
+		p.dbState.OverallStats.MutantsTotalGenerated = int32(len(mutants))
+		// Reset other overall stats for a fresh count based on newly listed mutants
+		p.dbState.OverallStats.MutantsTotalSlain = 0
+		// Initially all generated are unslain until tested
+		p.dbState.OverallStats.MutantsTotalUnslain = 0
+		p.dbState.OverallStats.MutationScore = 0.0
+
+		// Initialize per-file generated counts
+		if p.dbState.AnalyzedFiles == nil {
+			p.dbState.AnalyzedFiles = make(map[string]db.AnalyzedFile)
+		}
+
+		tempPerFileGenerated := make(map[string]int32)
+
+		for _, mutant := range mutants {
+			// Gambit usually outputs mutants in subdirs like "mutants/1/src/Contract.sol"
+			// We need to get the original contract path that this mutant belongs to.
+			// This requires parsing the mutant path or having this info from gambit_results.json.
+			// TODO: This could try to see if gambit_result.json is available. If not
+			// fall back to this mutant dir parsing logic.
+
+			// Path like src/Contract.sol
+			originalFilePath := getOriginalFilePathFromMutantPath(mutant.PathFromProjectRoot, *p.contractsDIR, *p.mutantsDIR)
+			if originalFilePath == "" {
+				log.Printf("[Warning] Could not determine original file path for mutant %s", mutant.PathFromProjectRoot)
+				continue
+			}
+
+			tempPerFileGenerated[originalFilePath]++
+		}
+
+		for path, count := range tempPerFileGenerated {
+			entry, ok := p.dbState.AnalyzedFiles[path]
+			if !ok {
+				entry = db.AnalyzedFile{FileSpecificStats: db.FileSpecificStats{}}
+				if entry.FileSpecificRecommendations == nil { // Initialize slice
+					entry.FileSpecificRecommendations = []string{}
+				}
+			}
+			entry.FileSpecificStats.MutantsTotalGenerated = count
+			entry.FileSpecificStats.MutantsTotalSlain = 0   // Reset for new count
+			entry.FileSpecificStats.MutantsTotalUnslain = 0 // Reset
+			entry.FileSpecificStats.MutationScore = 0.0
+			p.dbState.AnalyzedFiles[path] = entry
+		}
+		fmt.Printf("[Info] Initialized stats for %d generated mutants across %d files.\n",
+			p.dbState.OverallStats.MutantsTotalGenerated, len(p.dbState.AnalyzedFiles))
+	}
+}
+
+func getOriginalFilePathFromMutantPath(mutantPath, contractsDir, mutantsBaseDir string) string {
+	// Example: mutantPath = "gambit_out/mutants/15/src/MyContract.sol"
+	//          contractsDir = "src"
+	//          mutantsBaseDir = "gambit_out/mutants"
+	// We want to extract "src/MyContract.sol"
+
+	// Clean paths
+	mutantsBaseDirClean := filepath.Clean(mutantsBaseDir) + string(filepath.Separator) // e.g., "gambit_out/mutants/"
+
+	if strings.HasPrefix(mutantPath, mutantsBaseDirClean) {
+		// Remaining path: "15/src/MyContract.sol"
+		relativePathWithMutantId := strings.TrimPrefix(mutantPath, mutantsBaseDirClean)
+		// Find the second separator to skip the mutant ID part
+		parts := strings.SplitN(relativePathWithMutantId, string(filepath.Separator), 2)
+		if len(parts) == 2 {
+			return parts[1] // Should be "src/MyContract.sol"
+		}
+	}
+	log.Printf("[Debug] Failed to parse original path from mutant path: %s", mutantPath)
+	return "" // Or handle error appropriately
 }
 
 func parseCmdFlags(p *Program) {
