@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/ChmielewskiKamil/checkmate/db"
 )
@@ -32,88 +33,6 @@ type MutationAnalysisContext struct {
 	MutatedFilePathUsed string // Path to mutated file used for context generation
 	MutationMarkerLine  int    // Line number with the Mutation comment
 }
-
-// func AnalyzeMutations(mutantsDirPath string) error {
-// 	/*~*~*~*~*~*~*~*~*~*~*~* Pre-conditions ~*~*~*~*~*~*~*~*~*~*~*/
-// 	// Handle errors for users:
-// 	// - If the mutations directory is nonexistant, return error.
-// 	// - If there are no mutations in the mutations directory, return error.
-// 	// Panic:
-// 	// - Since this is the entrypoint function, there are no strong
-// 	// preconditions that should cause a panic.
-// 	info, err := os.Stat(mutantsDirPath)
-// 	if os.IsNotExist(err) {
-// 		return fmt.Errorf("[Error] The %s path does not exist. Before running the LLM analysis, you might want to run checkmate in standard mode to generate and slay the mutants first.", mutantsDirPath)
-// 	} else if err != nil {
-// 		return fmt.Errorf("[Error] Error accessing path %s: %w", mutantsDirPath, err)
-// 	}
-//
-// 	if !info.IsDir() {
-// 		return fmt.Errorf("[Error] The %s path exists, but is not a directory.", mutantsDirPath)
-// 	}
-//
-// 	entries, err := os.ReadDir(mutantsDirPath)
-// 	if err != nil {
-// 		return fmt.Errorf("[Error] There was a problem reading directory: %v", err)
-// 	}
-//
-// 	if len(entries) == 0 {
-// 		return fmt.Errorf("[Error] The directory is empty: %s", mutantsDirPath)
-// 	}
-//
-// 	// TODO: Check if particular mutant file is not empty (?)
-//
-// 	/*~*~*~*~*~*~*~*~*~*~*~*~* Actions ~*~*~*~*~*~*~*~*~*~*~*~*~*/
-//
-// 	var survivorIds []string
-// 	for _, entry := range entries {
-// 		if entry.IsDir() {
-// 			survivorIds = append(survivorIds, entry.Name())
-// 		}
-// 	}
-//
-// 	// TODO: This can be removed for production build but helps with picking
-// 	// mutations to analyze at random.
-// 	rand.Shuffle(len(survivorIds), func(i, j int) {
-// 		survivorIds[i], survivorIds[j] = survivorIds[j], survivorIds[i]
-// 	})
-//
-// 	// From gambitSurvivorsMap we can extract the Mutation Type and Mutation
-// 	// Diff.
-// 	gambitSurvivorsMap, err := extractGambitResultsJSON(mutantsDirPath)
-// 	if err != nil {
-// 		return fmt.Errorf("[Error] Error extracting mutation results from gambit_results.json: %w", err)
-// 	}
-//
-// 	for _, id := range survivorIds {
-// 		jsonInfo, ok := gambitSurvivorsMap[id]
-// 		if !ok {
-// 			fmt.Printf("[Warning] No JSON entry found for mutant survivor with ID %s. Skipping.\n", id)
-// 			continue
-// 		}
-// 		// 1. Create context
-// 		mutationContext, err := generateMutationAnalysisContext(id, mutantsDirPath, jsonInfo)
-// 		if err != nil {
-// 			return fmt.Errorf("[Error] Error generating mutation context: %w", err)
-// 		}
-//
-// 		// 2. Analyze Mutation with context
-// 		_, err = AnalyzeMutation(mutationContext)
-// 		if err != nil {
-// 			return fmt.Errorf("[Error] Error analyzing mutation: %v", err)
-// 		}
-//
-// 		// 3. Save result
-// 	}
-//
-// 	/*~*~*~*~*~*~*~*~*~*~* Post-conditions ~*~*~*~*~*~*~*~*~*~*~*/
-// 	// Post-conditions
-// 	// Panic:
-// 	// - There should be some kind of file created with the results.
-// 	// - The created result file shouldn't be empty
-//
-// 	return nil
-// }
 
 func extractGambitResultsJSON(mutantsDirPath string) (map[string]MutantJSONInfo, error) {
 	// Get the parent directory of the provided mutantsSpecificPath.
@@ -244,8 +163,8 @@ func AnalyzeMutations(
 	if !info.IsDir() {
 		return fmt.Errorf("LLM Analysis: The path %s is not a directory.", mutantsDirPath)
 	}
+	fmt.Println("[Info] LLM Analysis: Starting...")
 
-	// --- Ensure progress maps in dbState are initialized ---
 	if analysisDb.LanguageModelProgress.MutantsProcessed == nil {
 		analysisDb.LanguageModelProgress.MutantsProcessed = make(map[string]bool)
 	}
@@ -255,7 +174,7 @@ func AnalyzeMutations(
 
 	// --- Actions ---
 	// 1. Get survivor IDs (directories present in mutantsDirPath are assumed to be survivors)
-	var survivorIds []string // These are the string IDs of the mutant subdirectories
+	var survivorIds []string
 	entries, err := os.ReadDir(mutantsDirPath)
 	if err != nil {
 		return fmt.Errorf("LLM Analysis: Error reading mutants directory %s: %w", mutantsDirPath, err)
@@ -270,98 +189,166 @@ func AnalyzeMutations(
 		fmt.Println("\033[33m[Warning] LLM Analysis: No surviving mutant directories found in", mutantsDirPath, "to analyze.\033[0m")
 		return nil
 	}
+
+	// TODO: selectMutantsForLLMAnalysis will give a more accurate "to process" count.
 	fmt.Printf("[Info] LLM Analysis: Found %d potential surviving mutants to analyze.\n", len(survivorIds))
 
-	// Optional: Shuffle for variety if re-running or for testing different mutants first
 	rand.Shuffle(len(survivorIds), func(i, j int) {
 		survivorIds[i], survivorIds[j] = survivorIds[j], survivorIds[i]
 	})
 
-	// 2. Load gambit_results.json to get details (like original file path) for each survivor
+	// 2. Load gambit_results.json to get details for each survivor
 	gambitMutantDetailsMap, err := extractGambitResultsJSON(mutantsDirPath)
 	if err != nil {
 		return fmt.Errorf("LLM Analysis: Could not extract details from gambit_results.json: %w", err)
 	}
 
-	mutantsAnalyzedThisSession := 0
-	skippedSummarizer := newSkipSummarizer("LLM Analysis") // Defined further down or in a utility file
+	// 3. Select mutants that need analysis or re-analysis
+	mutantsToProcess := selectMutantsForLLMAnalysis(survivorIds, gambitMutantDetailsMap, analysisDb)
+	if len(mutantsToProcess) == 0 {
+		fmt.Println("[Info] LLM Analysis: No mutants require new or retried LLM analysis at this time.")
+		return nil
+	}
+	fmt.Printf("[Info] LLM Analysis: Will attempt to analyze/re-analyze %d mutants.\n", len(mutantsToProcess))
 
-	for _, mutantID := range survivorIds { // mutantID is the string like "1", "10", etc.
+	mutantsAnalyzedThisSession := 0
+
+	for _, mutantID := range mutantsToProcess { // mutantID is the string like "1", "10", etc.
 		mutantInfo, ok := gambitMutantDetailsMap[mutantID]
 		if !ok {
-			log.Printf("[Warning] LLM Analysis: No metadata found in gambit_results.json for mutant ID %s (directory name). Skipping.\n", mutantID)
-			// Mark as processed to avoid re-attempting this ID if it's truly problematic
-			analysisDb.LanguageModelProgress.MutantsProcessed[mutantID] = true
+			log.Printf("[Error] LLM Analysis: Consistency issue - no metadata for processing mutant ID %s. Skipping.\n", mutantID)
 			continue
 		}
-
-		// 3. Check if this mutant has already been processed by the LLM
-		if analysisDb.LanguageModelProgress.MutantsProcessed[mutantID] {
-			skippedSummarizer.RecordSkip(fmt.Sprintf("Mutant ID %s (%s)", mutantID, mutantInfo.Original))
-			continue
-		}
-		skippedSummarizer.PrintSummaryIfNeeded() // If a sequence of skips just ended
 
 		fmt.Printf("[Info] LLM Analysis: Preparing to analyze Mutant ID %s for original file '%s'.\n", mutantID, mutantInfo.Original)
 
+		// Ensure AnalyzedFile entry and its sub-maps are correctly initialized
+		originalFilePath := mutantInfo.Original
+		fileData, fileExists := analysisDb.AnalyzedFiles[originalFilePath]
+		if !fileExists {
+			fileData = db.AnalyzedFile{
+				FileSpecificStats:           db.FileSpecificStats{}, // Populated by init/slaying
+				FileSpecificRecommendations: make([]string, 0),
+				LLMAnalysisOutcomes:         make(map[string]db.MutantLLMAnalysisOutcome),
+			}
+		} else { // Entry exists, ensure sub-structures are not nil
+			if fileData.FileSpecificRecommendations == nil {
+				fileData.FileSpecificRecommendations = make([]string, 0)
+			}
+			if fileData.LLMAnalysisOutcomes == nil {
+				fileData.LLMAnalysisOutcomes = make(map[string]db.MutantLLMAnalysisOutcome)
+			}
+		}
+
 		// 4. Create context for the LLM
 		llmContext, ctxErr := generateMutationAnalysisContext(mutantID, mutantsDirPath, mutantInfo)
+
+		// TODO: Handle model used by an API call. For now hardcoded.
+		modelUsedPlaceholder := "qwen2.5-coder-7b-instruct"
+
+		outcome := db.MutantLLMAnalysisOutcome{
+			MutantID:  mutantID,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			ModelUsed: modelUsedPlaceholder,
+		}
+
 		if ctxErr != nil {
-			log.Printf("[Error] LLM Analysis: Failed to generate LLM context for mutant ID %s: %v. Skipping this mutant.\n", mutantID, ctxErr)
-			analysisDb.LanguageModelProgress.MutantsProcessed[mutantID] = true // Mark as attempted (context gen failed)
-			recordLLMFailure(analysisDb, mutantInfo.Original, mutantID, "Context generation failed: "+ctxErr.Error())
-			continue // Move to the next mutant
-		}
-
-		// 5. Analyze Mutation with context
-		llmResponseContent, analysisErr := AnalyzeMutation(llmContext)
-
-		if analysisErr != nil {
-			log.Printf("[Error] LLM Analysis: LLM call failed for mutant ID %s: %v.\n", mutantID, analysisErr)
-			analysisDb.LanguageModelProgress.MutantsProcessed[mutantID] = true // Mark as attempted (LLM call failed)
-			recordLLMFailure(analysisDb, mutantInfo.Original, mutantID, "LLM call failed: "+analysisErr.Error())
+			log.Printf("[Error] LLM Analysis: Failed to generate LLM context for mutant ID %s: %v.\n", mutantID, ctxErr)
+			outcome.Status = "FAILED_CONTEXT_GEN"
+			outcome.ErrorMessage = ctxErr.Error()
+			// LLMResponse remains empty (its zero value)
 		} else {
-			fmt.Printf("\033[32m[Success] LLM Analysis: Successfully analyzed mutant ID %s.\033[0m\n", mutantID)
-			// Append the successful response to the recommendations for the original file
-			originalFilePath := mutantInfo.Original
-			fileData, fileExists := analysisDb.AnalyzedFiles[originalFilePath]
-			if !fileExists {
-				// This should ideally not happen if initializeGeneratedMutantStats ran based on gambit_results.json
-				log.Printf("[Warning] LLM Analysis: No prior analysis entry for original file %s. Initializing it now.", originalFilePath)
-				fileData = db.AnalyzedFile{
-					FileSpecificStats:           db.FileSpecificStats{}, // Should have been set by slaying phase
-					FileSpecificRecommendations: []string{},             // Initialize empty slice
-				}
-			}
-			// Ensure the slice is not nil (important if loading from an older state file)
-			if fileData.FileSpecificRecommendations == nil {
-				fileData.FileSpecificRecommendations = []string{}
-			}
+			// 5. Analyze Mutation with context
+			llmResponseContent, analysisErr := AnalyzeMutation(llmContext)
 
-			// Format the recommendation clearly
-			recommendation := fmt.Sprintf("Suggestion for Mutant ID %s (Description: %s): %s",
-				mutantID, mutantInfo.Description, llmResponseContent)
-			fileData.FileSpecificRecommendations = append(fileData.FileSpecificRecommendations, recommendation)
-			analysisDb.AnalyzedFiles[originalFilePath] = fileData // Update the map
+			if analysisErr != nil {
+				log.Printf("[Error] LLM Analysis: LLM call failed for mutant ID %s: %v.\n", mutantID, analysisErr)
+				outcome.Status = "FAILED_LLM_CALL"
+				outcome.ErrorMessage = analysisErr.Error()
+				// LLMResponse remains empty
+			} else {
+				fmt.Printf("\033[32m[Success] LLM Analysis: Successfully analyzed mutant ID %s.\033[0m\n", mutantID)
+				outcome.Status = "COMPLETED"
+				outcome.LLMResponse = llmResponseContent // Store raw LLM output
 
-			analysisDb.LanguageModelProgress.MutantsProcessed[mutantID] = true // Mark as successfully processed
+				fileData.FileSpecificRecommendations = append(fileData.FileSpecificRecommendations, llmResponseContent)
+			}
 		}
+
+		fileData.LLMAnalysisOutcomes[mutantID] = outcome                   // Store detailed outcome
+		analysisDb.AnalyzedFiles[originalFilePath] = fileData              // Update the map in dbState
+		analysisDb.LanguageModelProgress.MutantsProcessed[mutantID] = true // Mark that an attempt outcome is now logged
 
 		// 6. Periodic Save
 		mutantsAnalyzedThisSession++
-		if mutantsAnalyzedThisSession%llmSaveInterval == 0 || mutantsAnalyzedThisSession == len(survivorIds)-skippedSummarizer.TotalSkippedOverall() { // Adjust total for accurate end check
+		// Adjust condition for last mutant: use len(mutantsToProcess)
+		if mutantsAnalyzedThisSession%llmSaveInterval == 0 || mutantsAnalyzedThisSession == len(mutantsToProcess) {
 			fmt.Printf("[Info] LLM Analysis: Saving progress to state file (%s)...\n", stateFilePath)
 			if errSave := stateFileSaveFunc(stateFilePath, analysisDb); errSave != nil {
-				fmt.Printf("[Error] LLM Analysis: Failed to save state: %v\n", errSave)
+				// Changed from Printf to Errorf for consistency
+				log.Printf("[Error] LLM Analysis: Failed to save state: %v\n", errSave)
 			} else {
 				fmt.Printf("\033[32m[Info] LLM Analysis: Progress saved.\033[0m\n")
 			}
 		}
 	}
-	skippedSummarizer.PrintSummaryIfNeededAndFinal() // Print any final batch of skips
 
-	fmt.Println("[Info] LLM Analysis for all targeted survivors completed.")
+	fmt.Println("[Info] LLM Analysis session completed.")
 	return nil
+}
+
+// Helper to select which mutants need analysis or re-analysis (from previous response)
+// This function decides who goes into the main processing loop.
+func selectMutantsForLLMAnalysis(
+	allSurvivorIds []string,
+	gambitDetailsMap map[string]MutantJSONInfo,
+	analysisDb *db.MutationAnalysis,
+) []string {
+	var toProcess []string
+	var skippedBecauseCompleted []string // For summary
+
+	for _, mutantID := range allSurvivorIds {
+		mutantInfo, ok := gambitDetailsMap[mutantID]
+		if !ok {
+			log.Printf("[Warning] LLM Selection: No details for survivor ID %s. Cannot determine original file. Skipping selection.", mutantID)
+			continue
+		}
+		originalFilePath := mutantInfo.Original
+
+		var existingOutcome db.MutantLLMAnalysisOutcome
+		var outcomeExists bool
+
+		if fileData, fileDataExists := analysisDb.AnalyzedFiles[originalFilePath]; fileDataExists {
+			if fileData.LLMAnalysisOutcomes != nil { // Check if the map itself exists
+				existingOutcome, outcomeExists = fileData.LLMAnalysisOutcomes[mutantID]
+			}
+		}
+
+		if outcomeExists && existingOutcome.Status == "COMPLETED" {
+			skippedBecauseCompleted = append(skippedBecauseCompleted, fmt.Sprintf("Mutant ID %s (%s)", mutantID, originalFilePath))
+			continue // Already successfully completed
+		}
+
+		// If outcome doesn't exist, or status is not "COMPLETED" (e.g., FAILED_*, or a new PENDING_RETRY status),
+		// then it needs to be processed.
+		toProcess = append(toProcess, mutantID)
+	}
+
+	if len(skippedBecauseCompleted) > 0 {
+		fmt.Printf("[Info] LLM Selection: Skipped %d mutant(s) already successfully analyzed by LLM:\n", len(skippedBecauseCompleted))
+		// To avoid very long prints, summarize if many:
+		if len(skippedBecauseCompleted) > 5 {
+			for i := 0; i < 3; i++ {
+				fmt.Printf("  - %s\n", skippedBecauseCompleted[i])
+			}
+			fmt.Printf("  ... and %d more.\n", len(skippedBecauseCompleted)-3)
+		} else {
+			for _, item := range skippedBecauseCompleted {
+				fmt.Printf("  - %s\n", item)
+			}
+		}
+	}
+	return toProcess
 }
 
 // Helper to record a generic LLM failure in FileSpecificRecommendations
