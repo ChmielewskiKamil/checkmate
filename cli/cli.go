@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strings"
 
 	"github.com/ChmielewskiKamil/checkmate/assert"
@@ -31,6 +32,7 @@ type Program struct {
 	skipGambit       *bool   // If you don't have or don't want to run gambit, skip it.
 	contractsDIR     *string // Path to the folder where Solidity contracts are store. Default is "src/".
 	analyzeMutations *bool   // Whether to analyze mutations with LLM or not
+	printReport      *bool   // Pretty print the mutation analysis report after all is done.
 
 	// dbState holds all persistent information, loaded from and saved to mutationAnalysisStateFile.
 	// All statistics and progress will be read from and written to this struct.
@@ -63,9 +65,11 @@ func New() *Program {
 
 	// The maps within p.dbState (like AnalyzedFiles, MutantsProcessed)
 	// are guaranteed to be non-nil by db.LoadStateFromFile's initialization logic.
-
-	fmt.Printf("[Info] Loaded analysis state from %s. Overall Mutants Generated: %d\n",
-		stateFileName, p.dbState.OverallStats.MutantsTotalGenerated)
+	// This has to be conditional to not include the stdout when printing the report.
+	if !*p.printReport {
+		fmt.Printf("[Info] Loaded analysis state from %s. Overall Mutants Generated: %d\n",
+			stateFileName, p.dbState.OverallStats.MutantsTotalGenerated)
+	}
 
 	return &p
 }
@@ -92,27 +96,39 @@ func Run(p *Program) (err error) {
 		if err != nil { // If Run is returning an error
 			actionMessage = "state due to an error in Run()"
 		}
-		fmt.Printf("[Info] Attempting to save %s...\n", actionMessage)
 
-		saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
-		if saveErr != nil {
-			fmt.Fprintf(os.Stderr, "\033[31m[Error] Failed to save state to %s: %v\033[0m\n", stateFileName, saveErr)
-			// If Run() was otherwise successful but this final save failed,
-			// make sure Run() returns this save error.
-			if err == nil {
-				err = fmt.Errorf("failed to save final state: %w", saveErr)
-			}
-		} else {
-			if err == nil { // Only print "successfully" if the main operation was also a success
-				fmt.Println("\033[32m[Info] Final state saved successfully.\033[0m")
+		if p.printReport == nil || !*p.printReport {
+			fmt.Printf("[Info] Attempting to save %s...\n", actionMessage)
+			saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
+			if saveErr != nil {
+				fmt.Fprintf(os.Stderr, "\033[31m[Error] Failed to save state to %s: %v\033[0m\n", stateFileName, saveErr)
+				if err == nil {
+					err = fmt.Errorf("failed to save final state: %w", saveErr)
+				}
 			} else {
-				fmt.Println("\033[33m[Info] State (partially) saved despite earlier errors in Run().\033[0m")
-
+				if err == nil {
+					fmt.Println("\033[32m[Info] Final state saved successfully.\033[0m")
+				} else {
+					fmt.Println("\033[33m[Info] State (partially) saved despite earlier errors in Run().\033[0m")
+				}
 			}
 		}
 	}()
 
-	// Pre-conditions
+	// --- Print Report Mode ---
+	if *p.printReport {
+		if p.dbState.OverallStats.MutantsTotalGenerated == 0 && len(p.dbState.AnalyzedFiles) == 0 {
+			fmt.Println("\033[33m[Warning] No analysis data found in state file. Nothing to print.\033[0m")
+			fmt.Printf("[Info] State file used: %s\n", stateFileName)
+			return nil
+		}
+		fmt.Println("--- Checkmate Analysis Report ---")
+		printMutationStatsReport(p)
+		printLLMRecommendationsReport(p)
+		printLLMAnalysisErrorsReport(p)
+		fmt.Println("--- End of Report ---")
+		return nil // Exit successfully after printing
+	}
 
 	// ---- LLM Analysis Mode ----
 	if *p.analyzeMutations {
@@ -305,6 +321,8 @@ func parseCmdFlags(p *Program) {
 		"Analyze the mutations present in the gambit_out/mutants/ directory with the help of an LLM.",
 	)
 
+	printReport := flag.Bool("print", false, "Print a summary report from the last analysis state and exit.")
+
 	flag.Parse()
 
 	if *versionFlag {
@@ -328,6 +346,7 @@ func parseCmdFlags(p *Program) {
 	p.gambitConfigPath = gambitConfigPath
 	p.contractsDIR = contractFilesPath
 	p.analyzeMutations = analyzeMutations
+	p.printReport = printReport
 
 	// Post-conditions
 	// TODO: Gambit config should be a valid json file
@@ -865,4 +884,130 @@ func copyFile(src, dst string) error {
 
 	_, err = io.Copy(destinationFile, sourceFile)
 	return err
+}
+
+// Renamed from printMutationStats to be more specific for report generation
+func printMutationStatsReport(p *Program) {
+	stats := p.dbState.OverallStats
+	analyzedFiles := p.dbState.AnalyzedFiles
+
+	fmt.Printf("\n## Mutation Analysis Statistics\n\n")
+
+	fmt.Printf("### Overall Statistics\n")
+	fmt.Printf("- Total mutants generated: %d\n", stats.MutantsTotalGenerated)
+	// Ensure Unslain is calculated if not already up-to-date from a full run
+	actualUnslain := stats.MutantsTotalGenerated - stats.MutantsTotalSlain
+	fmt.Printf("- Total mutants unslain: %d\n", actualUnslain)
+	fmt.Printf("- Total mutants slain: %d\n", stats.MutantsTotalSlain)
+	fmt.Printf("- Overall Mutation Score: %.2f%%\n\n", stats.MutationScore)
+
+	if len(analyzedFiles) > 0 {
+		fmt.Printf("### Per-File Breakdown\n")
+		// Sort file paths for consistent output
+		sortedFilePaths := make([]string, 0, len(analyzedFiles))
+		for k := range analyzedFiles {
+			sortedFilePaths = append(sortedFilePaths, k)
+		}
+		sort.Strings(sortedFilePaths)
+
+		for _, filePath := range sortedFilePaths {
+			fileData := analyzedFiles[filePath]
+			fmt.Printf("\n#### File: `%s`\n", filePath)
+			fmt.Printf("- Generated: %d\n", fileData.FileSpecificStats.MutantsTotalGenerated)
+			fileUnslain := fileData.FileSpecificStats.MutantsTotalGenerated - fileData.FileSpecificStats.MutantsTotalSlain
+			fmt.Printf("- Unslain:   %d\n", fileUnslain)
+			fmt.Printf("- Slain:     %d\n", fileData.FileSpecificStats.MutantsTotalSlain)
+			fmt.Printf("- Score:     %.2f%%\n", fileData.FileSpecificStats.MutationScore)
+		}
+	} else if stats.MutantsTotalGenerated > 0 { // If overall stats exist but no per-file breakdown yet
+		fmt.Println("No per-file breakdown available in the current state.")
+	}
+	fmt.Println()
+}
+
+func printLLMRecommendationsReport(p *Program) {
+	analyzedFiles := p.dbState.AnalyzedFiles
+	if len(analyzedFiles) == 0 {
+		return // Nothing to print if no files were analyzed
+	}
+
+	fmt.Printf("\n## LLM Test Case Recommendations\n")
+	foundRecommendations := false
+
+	sortedFilePaths := make([]string, 0, len(analyzedFiles))
+	for k := range analyzedFiles {
+		sortedFilePaths = append(sortedFilePaths, k)
+	}
+	sort.Strings(sortedFilePaths)
+
+	for _, filePath := range sortedFilePaths {
+		fileData := analyzedFiles[filePath]
+		if fileData.FileSpecificRecommendations != nil && len(fileData.FileSpecificRecommendations) > 0 {
+			if !foundRecommendations {
+				foundRecommendations = true
+			}
+			fmt.Printf("\n### File: `%s`\n", filePath)
+			for _, rec := range fileData.FileSpecificRecommendations {
+				// Assuming rec is the raw LLM output
+				fmt.Printf("- %s\n", rec) // Markdown list item
+			}
+		}
+	}
+
+	if !foundRecommendations {
+		fmt.Println("No LLM recommendations found in the current analysis state.")
+	}
+	fmt.Println()
+}
+
+func printLLMAnalysisErrorsReport(p *Program) {
+	analyzedFiles := p.dbState.AnalyzedFiles
+	if len(analyzedFiles) == 0 {
+		return
+	}
+
+	fmt.Printf("\n## LLM Analysis Issues Encountered\n")
+	foundErrors := false
+
+	sortedFilePaths := make([]string, 0, len(analyzedFiles))
+	for k := range analyzedFiles {
+		sortedFilePaths = append(sortedFilePaths, k)
+	}
+	sort.Strings(sortedFilePaths)
+
+	for _, filePath := range sortedFilePaths {
+		fileData := analyzedFiles[filePath]
+		if fileData.LLMAnalysisOutcomes != nil && len(fileData.LLMAnalysisOutcomes) > 0 {
+			var fileErrors []string
+			// Sort mutant IDs for consistent error reporting order
+			mutantIDsWithErrors := make([]string, 0, len(fileData.LLMAnalysisOutcomes))
+			for mutantID := range fileData.LLMAnalysisOutcomes {
+				mutantIDsWithErrors = append(mutantIDsWithErrors, mutantID)
+			}
+			sort.Strings(mutantIDsWithErrors)
+
+			for _, mutantID := range mutantIDsWithErrors {
+				outcome := fileData.LLMAnalysisOutcomes[mutantID]
+				if outcome.Status != "COMPLETED" && outcome.ErrorMessage != "" {
+					fileErrors = append(fileErrors, fmt.Sprintf("  - Mutant ID `%s`: %s (Status: %s, Timestamp: %s)",
+						mutantID, outcome.ErrorMessage, outcome.Status, outcome.Timestamp))
+				}
+			}
+
+			if len(fileErrors) > 0 {
+				if !foundErrors {
+					foundErrors = true
+				}
+				fmt.Printf("\n### File: `%s`\n", filePath)
+				for _, errMsg := range fileErrors {
+					fmt.Println(errMsg)
+				}
+			}
+		}
+	}
+
+	if !foundErrors {
+		fmt.Println("No LLM analysis errors or issues recorded.")
+	}
+	fmt.Println()
 }
