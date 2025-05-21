@@ -720,8 +720,12 @@ func checkRemappingExists(path string) bool {
 
 func testMutations(p *Program) error {
 	// Pre-conditions
-	assert.True(p.totalGeneratedMutants > 0, "Can't perform analysis if there are no mutants.")
-	assert.True(p.totalUnslainMutants == 0, "Before performing the analysis there must be 0 unslain mutants.")
+	assert.True(p.dbState.OverallStats.MutantsTotalGenerated > 0, "Can't perform analysis if there are no mutants.")
+
+	// Ensure SlayingProgress map is initialized
+	if p.dbState.SlayingProgress.MutantsProcessed == nil {
+		p.dbState.SlayingProgress.MutantsProcessed = make(map[string]bool)
+	}
 
 	fmt.Printf("\n\033[32m[Info] Starting the mutation analysis.\033[0m\n\n")
 
