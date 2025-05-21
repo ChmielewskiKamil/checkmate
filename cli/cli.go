@@ -75,30 +75,40 @@ func Run(p *Program) (err error) {
 	// This is a best-effort save. A more robust solution might involve signal handling.
 	defer func() {
 		if r := recover(); r != nil {
-			// If a panic occurred, try to save state before re-panicking
-			fmt.Fprintf(os.Stderr, "[Error] Panic occurred: %v. Attempting to save state...\n", r)
+			fmt.Fprintf(os.Stderr, "\033[31m[CRITICAL] Panic occurred: %v. Attempting to save state...\033[0m\n", r)
 			saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
 			if saveErr != nil {
-				fmt.Fprintf(os.Stderr, "[Error] Failed to save state during panic: %v\n", saveErr)
+				fmt.Fprintf(os.Stderr, "\033[31m[Error] Failed to save state during panic: %v\033[0m\n", saveErr)
 			} else {
-				fmt.Println("[Info] State saved successfully during panic recovery.")
+				fmt.Println("\033[32m[Info] State saved successfully during panic recovery.\033[0m")
 			}
 			panic(r) // Re-throw the panic
 		}
-		// If a normal error is being returned by Run, 'err' (named return) will be set.
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[Error] Run finished with error: %v. Attempting to save final state...\n", err)
-		} else {
-			fmt.Println("[Info] Run completed. Saving final state...")
+
+		// 'err' is the named return value from Run().
+		// The main function will be responsible for printing this 'err' to the user.
+		// This defer will log its own actions regarding state saving.
+		actionMessage := "final state"
+		if err != nil { // If Run is returning an error
+			actionMessage = "state due to an error in Run()"
 		}
+		fmt.Printf("[Info] Attempting to save %s...\n", actionMessage)
+
 		saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
 		if saveErr != nil {
-			fmt.Fprintf(os.Stderr, "[Error] Failed to save final state to %s: %v\n", stateFileName, saveErr)
-			if err == nil { // If Run was successful but save failed, make Run return the save error
-				err = saveErr
+			fmt.Fprintf(os.Stderr, "\033[31m[Error] Failed to save state to %s: %v\033[0m\n", stateFileName, saveErr)
+			// If Run() was otherwise successful but this final save failed,
+			// make sure Run() returns this save error.
+			if err == nil {
+				err = fmt.Errorf("failed to save final state: %w", saveErr)
 			}
 		} else {
-			fmt.Println("[Info] Final state saved successfully.")
+			if err == nil { // Only print "successfully" if the main operation was also a success
+				fmt.Println("\033[32m[Info] Final state saved successfully.\033[0m")
+			} else {
+				fmt.Println("\033[33m[Info] State (partially) saved despite earlier errors in Run().\033[0m")
+
+			}
 		}
 	}()
 
