@@ -177,3 +177,122 @@ cases for the revert with the `InvalidHookResponse` error.
 In the `removeCollateralToken(...)` function, the `if` statement condition: `operatorDelegatorTokenTVLs[i][collateralTokenIndex] > 0` can be
 hardcoded to `false` without affecting the test suite. Consider adding test
 cases for the revert with the `InvalidTVL` error.
+
+
+**Example 4**:
+
+**Input Code Diff**:
+```diff
+--- original
++++ mutant
+@@ -119,7 +119,8 @@
+         IERC20 _token,
+         uint256 _value
+     ) public view returns (uint256) {
+-        if (_token == stETH) {
++        /// IfStatementMutation(`_token == stETH` |==> `true`) of: `if (_token == stETH) {`
++        if (true) {
+             // if stETH secondary Oracle is not set then return 1:1
+             if (address(stETHSecondaryOracle) == address(0)) return _value;
+
+
+```
+
+**Input Function Context**:
+```solidity
+     */
+    function lookupTokenSecondaryValue(
+        IERC20 _token,
+        uint256 _balance
+    ) public view returns (uint256) {
+        if (_token == stETH) {
+            // if stETH secondary Oracle is not set then return 1:1
+            if (address(stETHSecondaryOracle) == address(0)) return _balance;
+
+            // check the last price
+            (, int256 price, , uint256 timestamp, ) = stETHSecondaryOracle.latestRoundData();
+            if (timestamp < block.timestamp - MAX_TIME_WINDOW) revert OraclePriceExpired();
+            if (price <= 0) revert InvalidOraclePrice();
+
+            // Price is times 10**18 ensure value amount is scaled
+            return (uint256(price) * _balance) / SCALE_FACTOR;
+        } else {
+            return lookupTokenValue(_token, _balance);
+        }
+    }
+
+    function lookupTokenSecondaryAmountFromValue(
+        IERC20 _token,
+        uint256 _value
+    ) public view returns (uint256) {
+        /// IfStatementMutation(`_token == stETH` |==> `true`) of: `if (_token == stETH) {`
+        if (true) {
+            // if stETH secondary Oracle is not set then return 1:1
+            if (address(stETHSecondaryOracle) == address(0)) return _value;
+
+            // check the last price
+```
+
+###Desired_Output###
+
+In the `lookupTokenSecondaryAmountFromValue(...)` function, the `if` statement condition: `_token == stETH` can be hardcoded to `true` without affecting the test suite. Consider adding tests for cases when the logic from the `if` branch of this statement is not executed.
+
+
+**Example 5**:
+
+**Input Code Diff**:
+```diff
+--- original
++++ mutant
+@@ -99,7 +99,8 @@
+         IERC20 _token,
+         uint256 _balance
+     ) public view returns (uint256) {
+-        if (_token == stETH) {
++        /// IfStatementMutation(`_token == stETH` |==> `false`) of: `if (_token == stETH) {`
++        if (false) {
+             // if stETH secondary Oracle is not set then return 1:1
+             if (address(stETHSecondaryOracle) == address(0)) return _balance;
+
+
+```
+
+**Input Function Context**:
+```solidity
+    /**
+     * @notice  Sets stETH exchange rate oracle
+     * @dev     permissioned call (only OracleAdmin)
+     * @param   _oracleAddress  address or new oracle
+     */
+    function setStETHSecondaryOracle(
+        AggregatorV3Interface _oracleAddress
+    ) external nonReentrant onlyOracleAdmin {
+        // Verify that the pricing of the oracle is 18 decimals - pricing calculations will be off otherwise
+        if (_oracleAddress.decimals() != 18)
+            revert InvalidTokenDecimals(18, _oracleAddress.decimals());
+
+        stETHSecondaryOracle = _oracleAddress;
+        emit StETHSecondaryOracleUpdated(_oracleAddress);
+    }
+
+    /**
+     * @notice  calculate stETH value in terms of ETH through market rate~
+     * @param   _balance  amount of stETH to convert in ETH
+     * @return  uint256  stETH value in ETH through secondary exchange rate (DEX price)
+     */
+    function lookupTokenSecondaryValue(
+        IERC20 _token,
+        uint256 _balance
+    ) public view returns (uint256) {
+        /// IfStatementMutation(`_token == stETH` |==> `false`) of: `if (_token == stETH) {`
+        if (false) {
+            // if stETH secondary Oracle is not set then return 1:1
+            if (address(stETHSecondaryOracle) == address(0)) return _balance;
+
+            // check the last price
+```
+
+###Desired_Output###
+
+In the `lookupTokenSecondaryValue(...)` function, the `if` statement condition: `_token == stETH` can be hardcoded to `false` without affecting the test suite. Consider adding test
+cases for the logic executed in the `if` branch of this statement.
