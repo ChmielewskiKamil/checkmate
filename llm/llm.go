@@ -66,21 +66,20 @@ type APIResponse struct {
 
 // AnalyzeMutation constructs and sends a request to the local LLM API.
 func AnalyzeMutation(ctx MutationAnalysisContext) (string, error) {
-	customizedSystemPrompt, err := getCustomSystemPrompt(ctx.MutationType)
-	if err != nil {
-		return "", fmt.Errorf("Failure loading embedded system prompts: %s", err)
-	}
-
-	// fmt.Println(customizedSystemPrompt)
-
+	// TODO: This was moved above the construction of system prompt purely to get test data
 	userContent := fmt.Sprintf(
-		"Mutation Type: %s\n\nCode Diff:\n```diff\n%s\n```\n\nFunction Context:\n```solidity\n%s\n```",
+		"Mutation Type: %s\n\nCode Diff:\n```diff\n%s\n```\n\nFunction Context:\n```solidity\n%s\n```\n\n",
 		ctx.MutationType,
 		ctx.MutationDiff,
 		ctx.MutationContext,
 	)
 
 	fmt.Printf("\033[32m%s\033[0m", userContent)
+
+	customizedSystemPrompt, err := getCustomSystemPrompt(ctx.MutationType)
+	if err != nil {
+		return "", fmt.Errorf("Failure loading embedded system prompts: %s", err)
+	}
 
 	// TODO: Before constructing the request, send GET v1/models to query
 	// available models.
