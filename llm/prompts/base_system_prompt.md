@@ -31,4 +31,6 @@ missing test case scenario that would have caught the given mutation.
 
 ### Few shot examples
 
+YOU MUST EXCLUDE the ###Desired_Output### tagline from your answer.
+
 {{ .FewShotExamples }}
