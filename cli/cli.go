@@ -65,6 +65,7 @@ func New() *Program {
 
 	// The maps within p.dbState (like AnalyzedFiles, MutantsProcessed)
 	// are guaranteed to be non-nil by db.LoadStateFromFile's initialization logic.
+	//
 	// This has to be conditional to not include the stdout when printing the report.
 	if !*p.printReport {
 		fmt.Printf("[Info] Loaded analysis state from %s. Overall Mutants Generated: %d\n",
