@@ -63,19 +63,11 @@ func New() *Program {
 	}
 	p.dbState = loadedState // Assign loaded data (or fresh initialized struct if file didn't exist)
 
-	// The maps within p.dbState (like AnalyzedFiles, MutantsProcessed)
-	// are guaranteed to be non-nil by db.LoadStateFromFile's initialization logic.
-	//
-	// This has to be conditional to not include the stdout when printing the report.
-	if !*p.printReport {
-		fmt.Printf("[Info] Loaded analysis state from %s. Overall Mutants Generated: %d\n",
-			stateFileName, p.dbState.OverallStats.MutantsTotalGenerated)
-	}
-
 	return &p
 }
 
 func Run(p *Program) (err error) {
+	var exitedForSpecialReason bool = false
 	// Attempt to save state on exit, especially if an error occurs.
 	// This is a best-effort save. A more robust solution might involve signal handling.
 	defer func() {
@@ -90,6 +82,11 @@ func Run(p *Program) (err error) {
 			panic(r) // Re-throw the panic
 		}
 
+		// If exited for --print or config-gen-only, don't show standard save messages.
+		if exitedForSpecialReason {
+			return
+		}
+
 		// 'err' is the named return value from Run().
 		// The main function will be responsible for printing this 'err' to the user.
 		// This defer will log its own actions regarding state saving.
@@ -98,20 +95,19 @@ func Run(p *Program) (err error) {
 			actionMessage = "state due to an error in Run()"
 		}
 
-		if p.printReport == nil || !*p.printReport {
-			fmt.Printf("[Info] Attempting to save %s...\n", actionMessage)
-			saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
-			if saveErr != nil {
-				fmt.Fprintf(os.Stderr, "\033[31m[Error] Failed to save state to %s: %v\033[0m\n", stateFileName, saveErr)
-				if err == nil {
-					err = fmt.Errorf("failed to save final state: %w", saveErr)
-				}
+		fmt.Printf("[Info] Attempting to save %s...\n", actionMessage)
+
+		saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
+		if saveErr != nil {
+			fmt.Fprintf(os.Stderr, "\033[31m[Error] Failed to save state to %s: %v\033[0m\n", stateFileName, saveErr)
+			if err == nil {
+				err = fmt.Errorf("failed to save final state: %w", saveErr)
+			}
+		} else {
+			if err == nil {
+				fmt.Println("\033[32m[Info] Final state saved successfully.\033[0m")
 			} else {
-				if err == nil {
-					fmt.Println("\033[32m[Info] Final state saved successfully.\033[0m")
-				} else {
-					fmt.Println("\033[33m[Info] State (partially) saved despite earlier errors in Run().\033[0m")
-				}
+				fmt.Println("\033[33m[Info] State (partially) saved despite earlier errors in Run().\033[0m")
 			}
 		}
 	}()
@@ -128,6 +124,7 @@ func Run(p *Program) (err error) {
 		printLLMRecommendationsReport(p)
 		printLLMAnalysisErrorsReport(p)
 		fmt.Println("--- End of Report ---")
+		exitedForSpecialReason = true
 		return nil // Exit successfully after printing
 	}
 
@@ -151,6 +148,7 @@ func Run(p *Program) (err error) {
 
 	// Actions
 	// ---- Slaying Mode ----
+	gambitWasRunThisSession := false
 	if !mutantsExist(p) && !*p.skipGambit {
 		if !gambitConfigExists(p) {
 			err := generateGambitConfig(p)
@@ -158,6 +156,7 @@ func Run(p *Program) (err error) {
 				return err
 			}
 			fmt.Println("\033[33m[Info] Generated gambit config successfuly.\n       Please review it and remove any files that you don't intend to test e.g. interfaces.\n       This will speed up the time it takes for gambit to generate the mutants and later\n       to run the analysis. After that re-run checkmate.\033[0m")
+			exitedForSpecialReason = true
 			return nil
 		}
 
@@ -165,10 +164,24 @@ func Run(p *Program) (err error) {
 		// set to correct version.
 
 		runGambit(p) // This generates mutants
-
+		gambitWasRunThisSession = true
 	}
 
 	initializeGeneratedMutantStats(p)
+
+	if p.dbState.OverallStats.MutantsTotalGenerated > 0 || gambitWasRunThisSession {
+		fmt.Println("[Info] Saving baseline mutant statistics...")
+		saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
+		if saveErr != nil {
+			// Log as a warning, as the main analysis can often still proceed.
+			log.Printf("[Warning] Failed to save baseline state after populating/refreshing stats: %v\n", saveErr)
+		} else {
+			fmt.Println("[Info] Baseline mutant statistics saved successfully.")
+		}
+	}
+
+	fmt.Printf("[Info] Loaded analysis state from %s. Overall Mutants Generated: %d\n",
+		stateFileName, p.dbState.OverallStats.MutantsTotalGenerated)
 
 	fmt.Println("[Info] Attempting an initial test run to check if your test suite is ready for the mutation analysis.")
 	if !testSuitePasses(p, true) {
