@@ -167,13 +167,28 @@ func Run(p *Program) (err error) {
 		gambitWasRunThisSession = true
 	}
 
+	var generatedCountBeforeInitialization int32
+	if !gambitWasRunThisSession {
+		generatedCountBeforeInitialization = p.dbState.OverallStats.MutantsTotalGenerated
+	}
+
 	initializeGeneratedMutantStats(p)
 
-	if p.dbState.OverallStats.MutantsTotalGenerated > 0 || gambitWasRunThisSession {
+	var baselineEstablishedThisSession bool
+	if gambitWasRunThisSession {
+		baselineEstablishedThisSession = true
+		fmt.Println("[Info] Generated mutant counts refreshed after Gambit run.")
+	} else {
+		if generatedCountBeforeInitialization == 0 && p.dbState.OverallStats.MutantsTotalGenerated > 0 {
+			baselineEstablishedThisSession = true
+			fmt.Println("[Info] Baseline mutant counts initialized from existing mutants directory (state was empty).")
+		}
+	}
+
+	if baselineEstablishedThisSession {
 		fmt.Println("[Info] Saving baseline mutant statistics...")
 		saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
 		if saveErr != nil {
-			// Log as a warning, as the main analysis can often still proceed.
 			log.Printf("[Warning] Failed to save baseline state after populating/refreshing stats: %v\n", saveErr)
 		} else {
 			fmt.Println("[Info] Baseline mutant statistics saved successfully.")
@@ -936,7 +951,6 @@ func printMutationStatsReport(p *Program) {
 	} else if stats.MutantsTotalGenerated > 0 { // If overall stats exist but no per-file breakdown yet
 		fmt.Println("No per-file breakdown available in the current state.")
 	}
-	fmt.Println()
 }
 
 func printLLMRecommendationsReport(p *Program) {
