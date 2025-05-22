@@ -198,6 +198,12 @@ func Run(p *Program) (err error) {
 	fmt.Printf("[Info] Loaded analysis state from %s. Overall Mutants Generated: %d\n",
 		stateFileName, p.dbState.OverallStats.MutantsTotalGenerated)
 
+	// TODO: If the run was stopped and now resumed, there is most likely the
+	// backup file in the contracts folder and the original file might contain
+	// the mutation.
+	// Implement a more robust backup of the OG file or simply restore the
+	// backup here.
+
 	fmt.Println("[Info] Attempting an initial test run to check if your test suite is ready for the mutation analysis.")
 	if !testSuitePasses(p, true) {
 		return fmt.Errorf(`Your test suite fails the initial run.
