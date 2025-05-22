@@ -54,7 +54,7 @@
 
 ###Desired_Output###
 
-In the `propose(...)` function, the call to `hooks.beforePropose(...)` function
-can be replaced with `assert(true)` (which is a no-op) without affecting the
-test suite. Consider adding test cases to check the expected effects of this
-removed expression.
+In the `propose(...)` function, the `hooks.beforePropose(...)` call
+can be replaced with `assert(true)` (which is effectively a no-op) without affecting the
+test suite. Consider adding test cases to check the expected effects of the
+original `hooks.beforePropose(...)` call.
