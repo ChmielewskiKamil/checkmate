@@ -159,3 +159,61 @@ suite. Consider adding test cases for the expected value emitted by this event.
 ###Desired_Output###
 
 In the `lookupTokenSecondaryValue(...)` function, the subtraction in the condition `if (timestamp < block.timestamp - MAX_TIME_WINDOW)` can be changed to division without affecting the test suite. Consider adding test cases for the expected behavior of the `OraclePriceExpired` revert condition.
+
+
+**Example 4**:
+
+**Input Code Diff**:
+```diff
+--- original
++++ mutant
+@@ -31,7 +31,8 @@
+     uint160 internal constant AFTER_QUEUE_FLAG = 1 << 2;
+
+     uint160 internal constant BEFORE_EXECUTE_FLAG = 1 << 1;
+-    uint160 internal constant AFTER_EXECUTE_FLAG = 1 << 0;
++    /// BinaryOpMutation(`<<` |==> `*`) of: `uint160 internal constant AFTER_EXECUTE_FLAG = 1 << 0;`
++    uint160 internal constant AFTER_EXECUTE_FLAG = 1*0;
+
+     struct Permissions {
+         bool beforeInitialize;
+
+```
+
+**Input Function Context**:
+```solidity
+    uint160 internal constant ALL_HOOK_MASK = uint160((1 << 16) - 1);
+
+    uint160 internal constant BEFORE_INITIALIZE_FLAG = 1 << 15;
+    uint160 internal constant AFTER_INITIALIZE_FLAG = 1 << 14;
+
+    uint160 internal constant BEFORE_VOTE_SUCCEEDED_FLAG = 1 << 13;
+    uint160 internal constant AFTER_VOTE_SUCCEEDED_FLAG = 1 << 12;
+
+    uint160 internal constant BEFORE_QUORUM_CALCULATION_FLAG = 1 << 11;
+    uint160 internal constant AFTER_QUORUM_CALCULATION_FLAG = 1 << 10;
+
+    uint160 internal constant BEFORE_VOTE_FLAG = 1 << 9;
+    uint160 internal constant AFTER_VOTE_FLAG = 1 << 8;
+
+    uint160 internal constant BEFORE_PROPOSE_FLAG = 1 << 7;
+    uint160 internal constant AFTER_PROPOSE_FLAG = 1 << 6;
+
+    uint160 internal constant BEFORE_CANCEL_FLAG = 1 << 5;
+    uint160 internal constant AFTER_CANCEL_FLAG = 1 << 4;
+
+    uint160 internal constant BEFORE_QUEUE_FLAG = 1 << 3;
+    uint160 internal constant AFTER_QUEUE_FLAG = 1 << 2;
+
+    uint160 internal constant BEFORE_EXECUTE_FLAG = 1 << 1;
+    /// BinaryOpMutation(`<<` |==> `*`) of: `uint160 internal constant AFTER_EXECUTE_FLAG = 1 << 0;`
+    uint160 internal constant AFTER_EXECUTE_FLAG = 1*0;
+
+    struct Permissions {
+        bool beforeInitialize;
+        bool afterInitialize;
+```
+
+###Desired_Output###
+
+In the definition of the `AFTER_EXECUTE_FLAG` constant, the bitwise left shift operation can be changed to multiplication without affecting the test suite. Consider adding test cases that depend on the value of this constant.
