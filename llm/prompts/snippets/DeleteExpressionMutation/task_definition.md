@@ -1,2 +1,4 @@
-Provide me output exactly like the ###Desired_Output### from the examples below 
-but based on the context from the provided input.
+Analyze the mutated code snippets in the examples below. You will be provided
+with a code snippet that contains the same type of mutation but in different
+codebase. Analyze it and provide me with the same style of output as
+in the ###Desired_Output### section from the examples.
