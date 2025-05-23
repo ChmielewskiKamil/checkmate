@@ -92,7 +92,7 @@ func Run(p *Program) (err error) {
 		// This defer will log its own actions regarding state saving.
 		actionMessage := "final state"
 		if err != nil { // If Run is returning an error
-			actionMessage = "state due to an error in Run()"
+			actionMessage = "state due to an error in the main program loop"
 		}
 
 		fmt.Printf("[Info] Attempting to save %s...\n", actionMessage)
@@ -107,7 +107,7 @@ func Run(p *Program) (err error) {
 			if err == nil {
 				fmt.Println("\033[32m[Info] Final state saved successfully.\033[0m")
 			} else {
-				fmt.Println("\033[33m[Info] State (partially) saved despite earlier errors in Run().\033[0m")
+				fmt.Println("\033[33m[Info] State saved despite earlier errors.\033[0m")
 			}
 		}
 	}()
@@ -203,6 +203,7 @@ func Run(p *Program) (err error) {
 	// the mutation.
 	// Implement a more robust backup of the OG file or simply restore the
 	// backup here.
+	checkForAndRestoreInterruptedState(p)
 
 	fmt.Println("[Info] Attempting an initial test run to check if your test suite is ready for the mutation analysis.")
 	if !testSuitePasses(p, true) {
@@ -616,13 +617,6 @@ func printMutationStats(p *Program) {
 				scoreInFile = (float32(fileData.FileSpecificStats.MutantsTotalSlain) / float32(fileData.FileSpecificStats.MutantsTotalGenerated)) * 100
 			}
 			fmt.Printf("  Score:     %.2f%%\n", scoreInFile) // Calculate derived value
-			if len(fileData.FileSpecificRecommendations) > 0 {
-				fmt.Printf("  LLM Recommendations:\n")
-				for _, rec := range fileData.FileSpecificRecommendations {
-					fmt.Printf("    - %s\n", rec)
-				}
-				fmt.Println()
-			}
 		}
 	} else {
 		fmt.Println("No per-file data available yet.")
@@ -781,7 +775,7 @@ func testMutations(p *Program) error {
 	fmt.Printf("\n\033[32m[Info] Starting the mutation analysis.\033[0m\n\n")
 
 	mutantFiles := listSolidityFiles(*p.mutantsDIR)
-	mutantsProcessedCount := 0
+	mutantsProcessedCount := len(p.dbState.SlayingProgress.MutantsProcessed)
 	consecutiveSkippedCount := 0 // Counter for consecutively skipped mutants
 
 	for _, mutantFile := range mutantFiles {
@@ -796,9 +790,9 @@ func testMutations(p *Program) error {
 		// If there were previously skipped mutants in a sequence, print a summary for them.
 		if consecutiveSkippedCount > 0 {
 			if consecutiveSkippedCount == 1 {
-				fmt.Printf("[Info] Skipped 1 already processed mutant.\n")
+				fmt.Printf("[Info] Skipped 1 already tested mutant (survivor).\n")
 			} else {
-				fmt.Printf("[Info] Skipped %d already processed mutants.\n", consecutiveSkippedCount)
+				fmt.Printf("[Info] Skipped %d already tested mutants (survivors).\n", consecutiveSkippedCount)
 			}
 			consecutiveSkippedCount = 0 // Reset for the next potential batch of skipped ones
 		}
@@ -886,8 +880,8 @@ func testMutations(p *Program) error {
 			if errSave := db.SaveStateToFile(stateFileName, &p.dbState); errSave != nil {
 				log.Printf("[Warning] Failed to save state during testing mutations: %v", errSave)
 			} else {
-
-				fmt.Printf("\033[32m[Info] Progress saved after processing %d mutants.\033[0m\n", mutantsProcessedCount)
+				fmt.Printf("\033[32m[Info] Progress saved. Processed %d mutants so far. %d mutants remaining.\033[0m\n",
+					mutantsProcessedCount, int(p.dbState.OverallStats.MutantsTotalGenerated)-mutantsProcessedCount)
 			}
 		}
 	}
@@ -921,7 +915,6 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-// Renamed from printMutationStats to be more specific for report generation
 func printMutationStatsReport(p *Program) {
 	stats := p.dbState.OverallStats
 	analyzedFiles := p.dbState.AnalyzedFiles
@@ -1044,4 +1037,66 @@ func printLLMAnalysisErrorsReport(p *Program) {
 		fmt.Println("No LLM analysis errors or issues recorded.")
 	}
 	fmt.Println()
+}
+
+func checkForAndRestoreInterruptedState(p *Program) {
+	if p.contractsDIR == nil || *p.contractsDIR == "" {
+		fmt.Println("[Info] Contracts directory not specified; skipping check for leftover '.sol.bak' files.")
+		return
+	}
+
+	originalContractFiles := listSolidityFiles(*p.contractsDIR)
+
+	restoredCount := 0
+	if len(originalContractFiles) == 0 {
+		fmt.Printf("[Info] No source files found in '%s' to check for backups.\n", *p.contractsDIR)
+		return
+	}
+
+	for _, solFile := range originalContractFiles {
+		originalFilePath := solFile.PathFromProjectRoot
+		backupFilePath := originalFilePath + ".bak"
+
+		// Check if the backup file exists
+		backupInfo, errBak := os.Stat(backupFilePath)
+		if errBak == nil && !backupInfo.IsDir() {
+			originalInfo, errOrig := os.Stat(originalFilePath)
+
+			if os.IsNotExist(errOrig) {
+				log.Printf("\033[33m[Warning] Found backup %s, but original file %s is missing! Restoring from backup.\033[0m\n", backupFilePath, originalFilePath)
+			} else if errOrig != nil {
+				log.Printf("\033[31m[Error] Found backup %s, but could not stat original file %s: %v. Manual check required.\033[0m\n", backupFilePath, originalFilePath, errOrig)
+				continue // Skip to next file
+			} else if originalInfo.IsDir() {
+				log.Printf("\033[31m[Error] Found backup %s, but original path %s is a directory! Manual check required.\033[0m\n", backupFilePath, originalFilePath)
+				continue // Skip to next file
+			}
+
+			// If we are here, backup exists, and original exists (or was missing and we'll overwrite).
+
+			fmt.Printf("\033[33m[Warning] Found backup file %s, indicating a previous run might have been interrupted.\033[0m\n", backupFilePath)
+			fmt.Printf("[Info] Attempting to restore original file '%s' from this backup...\n", originalFilePath)
+
+			// copyFile(src, dst)
+			if errRestore := copyFile(backupFilePath, originalFilePath); errRestore != nil {
+				log.Printf("\033[31m[Error] Failed to restore '%s' from backup '%s': %v. Manual intervention may be required.\033[0m\n", originalFilePath, backupFilePath, errRestore)
+			} else {
+				fmt.Printf("\033[32m[Success] Restored '%s' from '%s'.\033[0m\n", originalFilePath, backupFilePath)
+
+				if errRemove := os.Remove(backupFilePath); errRemove != nil {
+					log.Printf("\033[31m[Error] Failed to remove backup file '%s' after successful restore: %v\033[0m\n", backupFilePath, errRemove)
+				} else {
+					fmt.Printf("[Info] Removed backup file '%s'.\n", backupFilePath)
+					restoredCount++
+				}
+			}
+		} else if errBak != nil && !os.IsNotExist(errBak) {
+			// Log error if stating .bak file failed for reason other than not existing
+			log.Printf("[Warning] Could not check for backup file %s: %v\n", backupFilePath, errBak)
+		}
+	}
+
+	if restoredCount > 0 {
+		fmt.Printf("[Info] Finished checking for backups. %d file(s) were restored.\n", restoredCount)
+	}
 }
