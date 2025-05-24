@@ -257,4 +257,4 @@ In the definition of the `AFTER_EXECUTE_FLAG` constant, the bitwise left shift o
 
 ###Desired_Output###
 
-In the `validate_uint16(...)` function, the subtraction in the slicing operation `bytes2(param[param.length - 2:param.length])` can be changed to division without affecting the test suite. Consider adding test cases that depend on the expected result of this slicing operation.
+In the `validate_uint16(...)` function, the subtraction in the slicing operation `bytes2(param[param.length - 2:param.length])` can be changed to division without affecting the test suite. Consider adding test cases that depend on the value of the sliced data.

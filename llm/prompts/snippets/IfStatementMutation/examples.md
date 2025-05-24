@@ -78,17 +78,6 @@ cases for the logic executed in the `if` branch of this statement.
 
 **Input Function Context**:
 ```solidity
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        bytes32 descriptionHash
-    ) internal noSelfCall(self) {
-        if (self.hasPermission(AFTER_QUEUE_FLAG)) {
-            self.callHook(
-                abi.encodeCall(IHooks.afterQueue, (msg.sender, proposalId, targets, values, calldatas, descriptionHash))
-            );
-        }
-    }
-
     /// @notice calls beforeCancel hook if permissioned and validates return value
     function beforeCancel(
         IHooks self,
@@ -139,19 +128,6 @@ cases for the revert with the `InvalidHookResponse` error.
 
 **Input Function Context**:
 ```solidity
-        // Verify the token has 18 decimal precision - pricing calculations will be off otherwise
-        if (IERC20Metadata(address(_newCollateralToken)).decimals() != 18)
-            revert InvalidTokenDecimals(
-                18,
-                IERC20Metadata(address(_newCollateralToken)).decimals()
-            );
-
-        // Add it to the list
-        collateralTokens.push(_newCollateralToken);
-
-        emit CollateralTokenAdded(_newCollateralToken);
-    }
-
     /// @dev Allows restake manager to remove a collateral token
     function removeCollateralToken(
         IERC20 _collateralTokenToRemove
@@ -200,27 +176,6 @@ cases for the revert with the `InvalidTVL` error.
 
 **Input Function Context**:
 ```solidity
-     */
-    function lookupTokenSecondaryValue(
-        IERC20 _token,
-        uint256 _balance
-    ) public view returns (uint256) {
-        if (_token == stETH) {
-            // if stETH secondary Oracle is not set then return 1:1
-            if (address(stETHSecondaryOracle) == address(0)) return _balance;
-
-            // check the last price
-            (, int256 price, , uint256 timestamp, ) = stETHSecondaryOracle.latestRoundData();
-            if (timestamp < block.timestamp - MAX_TIME_WINDOW) revert OraclePriceExpired();
-            if (price <= 0) revert InvalidOraclePrice();
-
-            // Price is times 10**18 ensure value amount is scaled
-            return (uint256(price) * _balance) / SCALE_FACTOR;
-        } else {
-            return lookupTokenValue(_token, _balance);
-        }
-    }
-
     function lookupTokenSecondaryAmountFromValue(
         IERC20 _token,
         uint256 _value
@@ -260,22 +215,6 @@ In the `lookupTokenSecondaryAmountFromValue(...)` function, the `if` statement c
 **Input Function Context**:
 ```solidity
     /**
-     * @notice  Sets stETH exchange rate oracle
-     * @dev     permissioned call (only OracleAdmin)
-     * @param   _oracleAddress  address or new oracle
-     */
-    function setStETHSecondaryOracle(
-        AggregatorV3Interface _oracleAddress
-    ) external nonReentrant onlyOracleAdmin {
-        // Verify that the pricing of the oracle is 18 decimals - pricing calculations will be off otherwise
-        if (_oracleAddress.decimals() != 18)
-            revert InvalidTokenDecimals(18, _oracleAddress.decimals());
-
-        stETHSecondaryOracle = _oracleAddress;
-        emit StETHSecondaryOracleUpdated(_oracleAddress);
-    }
-
-    /**
      * @notice  calculate stETH value in terms of ETH through market rate~
      * @param   _balance  amount of stETH to convert in ETH
      * @return  uint256  stETH value in ETH through secondary exchange rate (DEX price)
@@ -296,3 +235,54 @@ In the `lookupTokenSecondaryAmountFromValue(...)` function, the `if` statement c
 
 In the `lookupTokenSecondaryValue(...)` function, the `if` statement condition: `_token == stETH` can be hardcoded to `false` without affecting the test suite. Consider adding test
 cases for the logic executed in the `if` branch of this statement.
+
+
+**Example 6**:
+
+**Input Code Diff**:
+```diff
+--- original
++++ mutant
+@@ -112,7 +112,8 @@
+         // Route hook to voting module
+         if (module != address(0)) {
+             Hooks.Permissions memory hooks = BaseHook(module).getHookPermissions();
+-            if (hooks.beforeVoteSucceeded) {
++            /// IfStatementMutation(`hooks.beforeVoteSucceeded` |==> `true`) of: `if (hooks.beforeVoteSucceeded) {`
++            if (true) {
+                 (, voteSucceeded) = BaseHook(module).beforeVoteSucceeded(msg.sender, proposalId);
+             }
+         }
+
+```
+
+**Input Function Context**:
+```solidity
+    /// @inheritdoc IHooks
+    function beforeVoteSucceeded(address, /* sender */ uint256 proposalId)
+        external
+        view
+        override
+        returns (bytes4, bool voteSucceeded)
+    {
+        voteSucceeded = false;
+        uint8 proposalTypeId = _proposalTypeId[proposalId];
+        _proposalTypeExists(proposalTypeId);
+
+        address module = _proposalTypes[proposalTypeId].module;
+
+        // Route hook to voting module
+        if (module != address(0)) {
+            Hooks.Permissions memory hooks = BaseHook(module).getHookPermissions();
+            /// IfStatementMutation(`hooks.beforeVoteSucceeded` |==> `true`) of: `if (hooks.beforeVoteSucceeded) {`
+            if (true) {
+                (, voteSucceeded) = BaseHook(module).beforeVoteSucceeded(msg.sender, proposalId);
+            }
+        }
+
+```
+
+###Desired_Output###
+
+In the `beforeVoteSucceeded(...)` function, the `if` statement condition: `hooks.beforeVoteSucceeded` can be hardcoded to `true` without affecting the test suite. Consider adding tests for cases when the logic from the `if` branch of this statement is not executed.
+
