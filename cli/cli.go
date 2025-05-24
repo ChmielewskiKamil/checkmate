@@ -833,10 +833,48 @@ func testMutations(p *Program) error {
 
 		if !testSuitePasses(p, false) { // Test suite fails -> mutant is slain
 			fmt.Printf("[Info] Mutant slain 🗡️ (%s)\n", mutantFile.PathFromProjectRoot)
-			mutantDirToRemove := filepath.Dir(filepath.Dir(mutantFile.PathFromProjectRoot)) // Go up twice if structure is id/src/file.sol
-			if strings.HasPrefix(mutantDirToRemove, filepath.Clean(*p.mutantsDIR)) {        // Basic safety check
-				os.RemoveAll(mutantDirToRemove)
-				// fmt.Printf("[Debug] Would remove mutant directory: %s\n", mutantDirToRemove)
+
+			var mutantDirToRemove string // Will hold the path like "gambit_out/mutants/492"
+
+			cleanMutantsBaseDir := filepath.Clean(*p.mutantsDIR)                  // gambit_out/mutants/
+			cleanMutantFilePath := filepath.Clean(mutantFile.PathFromProjectRoot) // gambit_out/mutants/492/src/Mutant.sol
+
+			// Get the path of the mutant file relative to the base mutants directory
+			// e.g., if base is "gambit_out/mutants" and file is "gambit_out/mutants/492/src/File.sol",
+			// relPath will be "492/src/File.sol" (or "492\src\File.sol" on Windows)
+			relPath, err := filepath.Rel(cleanMutantsBaseDir, cleanMutantFilePath)
+			if err != nil {
+				fmt.Printf("\033[31m[Warning] Could not determine relative path for mutant %s regarding base %s: %v. Skipping removal.\033[0m",
+					cleanMutantFilePath, cleanMutantsBaseDir, err)
+			} else {
+				// relPath should now be something like "492/src/File.sol" or "492/File.sol" or "492/src/libraries/File.sol"
+				// We want the first component of this relative path, which is the mutant ID folder.
+				parts := strings.Split(relPath, string(filepath.Separator))
+				if len(parts) > 0 && parts[0] != "" && parts[0] != "." && parts[0] != ".." {
+					mutantIdFolderName := parts[0] // This should be "492"
+					mutantDirToRemove = filepath.Join(cleanMutantsBaseDir, mutantIdFolderName)
+				} else {
+					log.Printf("\033[31m[Warning] Could not extract a valid mutant ID folder from relative path '%s' (derived from %s). Skipping removal.\033[0m",
+						relPath, cleanMutantFilePath)
+				}
+			}
+
+			if mutantDirToRemove != "" {
+				// 1. Ensure it's still prefixed by the base mutants directory (double check after join).
+				// 2. Ensure we are not trying to remove the base mutants directory itself or current dir.
+				finalCleanMutantDirToRemove := filepath.Clean(mutantDirToRemove)
+
+				if strings.HasPrefix(finalCleanMutantDirToRemove, cleanMutantsBaseDir) &&
+					finalCleanMutantDirToRemove != cleanMutantsBaseDir &&
+					finalCleanMutantDirToRemove != "." {
+
+					if errRem := os.RemoveAll(finalCleanMutantDirToRemove); errRem != nil {
+						log.Printf("[Warning] Failed to remove slain mutant directory %s: %v\n", finalCleanMutantDirToRemove, errRem)
+					}
+				} else {
+					log.Printf("[Warning] Sanity check failed: Path '%s' derived for removal is not a valid mutant sub-directory of '%s'. Removal skipped.",
+						finalCleanMutantDirToRemove, cleanMutantsBaseDir)
+				}
 			}
 
 			p.dbState.OverallStats.MutantsTotalSlain++
