@@ -338,7 +338,7 @@ func selectMutantsForLLMAnalysis(
 		fmt.Printf("[Info] LLM Selection: Skipped %d mutant(s) already successfully analyzed by LLM:\n", len(skippedBecauseCompleted))
 		// To avoid very long prints, summarize if many:
 		if len(skippedBecauseCompleted) > 5 {
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				fmt.Printf("  - %s\n", skippedBecauseCompleted[i])
 			}
 			fmt.Printf("  ... and %d more.\n", len(skippedBecauseCompleted)-3)
@@ -351,33 +351,10 @@ func selectMutantsForLLMAnalysis(
 	return toProcess
 }
 
-// Helper to record a generic LLM failure in FileSpecificRecommendations
-func recordLLMFailure(analysisDb *db.MutationAnalysis, originalFilePath, mutantID, reason string) {
-	fileData, fileExists := analysisDb.AnalyzedFiles[originalFilePath]
-	if !fileExists {
-		log.Printf("[Warning] LLM Failure Record: No prior analysis entry for original file %s. Initializing.", originalFilePath)
-		fileData = db.AnalyzedFile{
-			FileSpecificStats:           db.FileSpecificStats{},
-			FileSpecificRecommendations: []string{},
-		}
-	}
-	if fileData.FileSpecificRecommendations == nil {
-		fileData.FileSpecificRecommendations = make([]string, 0)
-	}
-	failureMessage := fmt.Sprintf("Mutant ID %s: LLM analysis attempt failed - %s", mutantID, reason)
-	fileData.FileSpecificRecommendations = append(fileData.FileSpecificRecommendations, failureMessage)
-	analysisDb.AnalyzedFiles[originalFilePath] = fileData
-}
-
-// --- skipSummarizer utility (can be in a util.go file or here) ---
 type skipSummarizer struct {
 	moduleName          string
 	consecutiveSkipped  int
 	totalSkippedThisRun int // Total skipped since summarizer was created or last final print
-}
-
-func newSkipSummarizer(moduleName string) *skipSummarizer {
-	return &skipSummarizer{moduleName: moduleName}
 }
 
 func (s *skipSummarizer) RecordSkip(itemName string) {
