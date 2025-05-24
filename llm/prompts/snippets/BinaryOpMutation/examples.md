@@ -50,9 +50,7 @@
 
 ###Desired_Output###
 
-In the `_queueOperations(...)` function, the addition in the return statement `block.timestamp + deadline` can
-be changed to multiplication without affecting the test suite. Consider adding
-test cases for the expected return value of this function.
+In the `_queueOperations(...)` function, the addition in the return statement `block.timestamp + deadline` can be changed to multiplication without affecting the test suite. Consider adding test cases for the expected return value of this function.
 
 
 **Example 2**:
@@ -97,9 +95,7 @@ test cases for the expected return value of this function.
 
 ###Desired_Output###
 
-In the `fillEthWithdrawBuffer(...)` function, the subtraction in the `EthBufferFilled(msg.value - queueFilled)`
-event emission can be changed to multiplication without affecting the test
-suite. Consider adding test cases for the expected value emitted by this event.
+In the `fillEthWithdrawBuffer(...)` function, the subtraction in the `EthBufferFilled(msg.value - queueFilled)` event emission can be changed to multiplication without affecting the test suite. Consider adding test cases for the expected value emitted by this event.
 
 
 **Example 3**:

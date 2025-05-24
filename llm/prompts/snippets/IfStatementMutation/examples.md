@@ -53,9 +53,7 @@
 
 ###Desired_Output###
 
-In the `afterCancel(...)` function, the `if` statement condition: `module != address(0)` can be
-hardcoded to `false` without affecting the test suite. Consider adding test
-cases for the logic executed in the `if` branch of this statement.
+In the `afterCancel(...)` function, the `if` statement condition: `module != address(0)` can be hardcoded to `false` without affecting the test suite. Consider adding test cases for the logic executed in the `if` branch of this statement.
 
 
 **Example 2**:
@@ -102,9 +100,7 @@ cases for the logic executed in the `if` branch of this statement.
 
 ###Desired_Output###
 
-In the `beforeCancel(...)` function, the `if` statement condition: `result.length != 64` can be
-hardcoded to `false` without affecting the test suite. Consider adding test
-cases for the revert with the `InvalidHookResponse` error.
+In the `beforeCancel(...)` function, the `if` statement condition: `result.length != 64` can be hardcoded to `false` without affecting the test suite. Consider adding test cases for the revert with the `InvalidHookResponse` error.
 
 
 **Example 3**:
@@ -150,9 +146,7 @@ cases for the revert with the `InvalidHookResponse` error.
 
 ###Desired_Output###
 
-In the `removeCollateralToken(...)` function, the `if` statement condition: `operatorDelegatorTokenTVLs[i][collateralTokenIndex] > 0` can be
-hardcoded to `false` without affecting the test suite. Consider adding test
-cases for the revert with the `InvalidTVL` error.
+In the `removeCollateralToken(...)` function, the `if` statement condition: `operatorDelegatorTokenTVLs[i][collateralTokenIndex] > 0` can be hardcoded to `false` without affecting the test suite. Consider adding test cases for the revert with the `InvalidTVL` error.
 
 
 **Example 4**:
@@ -233,8 +227,7 @@ In the `lookupTokenSecondaryAmountFromValue(...)` function, the `if` statement c
 
 ###Desired_Output###
 
-In the `lookupTokenSecondaryValue(...)` function, the `if` statement condition: `_token == stETH` can be hardcoded to `false` without affecting the test suite. Consider adding test
-cases for the logic executed in the `if` branch of this statement.
+In the `lookupTokenSecondaryValue(...)` function, the `if` statement condition: `_token == stETH` can be hardcoded to `false` without affecting the test suite. Consider adding test cases for the logic executed in the `if` branch of this statement.
 
 
 **Example 6**:

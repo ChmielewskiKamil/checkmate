@@ -15,6 +15,9 @@ missing test case scenario that would have caught the given mutation.
 
 ### You will receive only {{ .MutationTypeName }} mutation types
 
+You will always be provided with a SINGLE mutation of the {{ .MutationTypeName }}
+type.
+
 {{ .MutationTypeExplainer }}
 
 ### Task definition

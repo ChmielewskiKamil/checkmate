@@ -106,5 +106,46 @@ library Hooks {
 
 ###Desired_Output###
 
-In the definition of the `BEFORE_VOTE_FLAG` constant, the operands in the expression `1 << 9` can be swapped to `9 << 1` without affecting the test suite.
-Consider adding test cases that depend on the value of this constant.
+In the definition of the `BEFORE_VOTE_FLAG` constant, the operands in the expression `1 << 9` can be swapped to `9 << 1` without affecting the test suite. Consider adding test cases that depend on the value of this constant.
+
+
+**Example 3**:
+
+**Input Code Diff**:
+```diff
+--- original
++++ mutant
+@@ -77,7 +77,8 @@
+         pure
+     {
+         compare(
+-            bytes32(bytes1(param[param.length - 1:param.length])),
++            /// SwapArgumentsOperatorMutation(`param.length - 1` |==> `1 - param.length`) of: `bytes32(bytes1(param[param.length - 1:param.length])),`
++            bytes32(bytes1(param[1 - param.length:param.length])),
+             bytes32(bytes1(scopedParam[scopedParam.length - 1:scopedParam.length])),
+             comparison
+         );
+
+```
+
+**Input Function Context**:
+```solidity
+    /**
+     * @dev Conforms the uint8 type to the necessary size considerations prior to comparison
+     */
+    function validate_uint8(bytes calldata param, bytes calldata scopedParam, IMiddleware.Comparators comparison)
+        internal
+        pure
+    {
+        compare(
+            /// SwapArgumentsOperatorMutation(`param.length - 1` |==> `1 - param.length`) of: `bytes32(bytes1(param[param.length - 1:param.length])),`
+            bytes32(bytes1(param[1 - param.length:param.length])),
+            bytes32(bytes1(scopedParam[scopedParam.length - 1:scopedParam.length])),
+            comparison
+        );
+    }
+```
+
+###Desired_Output###
+
+In the `validate_uint8(...)` function, the operands in the expression `bytes32(bytes1(param[param.length - 1:param.length]))` can be swapped to `(param[1 - param.length:param.length])` without affecting the test suite. Consider adding test cases that depend on the original order of operands.
