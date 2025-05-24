@@ -92,7 +92,7 @@ func AnalyzeMutation(ctx MutationAnalysisContext) (string, error) {
 			{Role: "system", Content: customizedSystemPrompt},
 			{Role: "user", Content: userContent},
 		},
-		Temperature: 0.3,
+		Temperature: 0.1,
 		MaxTokens:   -1, // No limit
 	}
 
