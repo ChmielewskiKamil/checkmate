@@ -68,7 +68,7 @@ type APIResponse struct {
 func AnalyzeMutation(ctx MutationAnalysisContext) (string, error) {
 	// TODO: This was moved above the construction of system prompt purely to get test data
 	userContent := fmt.Sprintf(
-		"Mutation Type: %s\n\nCode Diff:\n```diff\n%s\n```\n\nFunction Context:\n```solidity\n%s\n```\n\n",
+		"Mutation Type: %s\n\n**Input Code Diff**:\n```diff\n%s\n```\n\n**Input Function Context**:\n```solidity\n%s\n```\n\n",
 		ctx.MutationType,
 		ctx.MutationDiff,
 		ctx.MutationContext,
