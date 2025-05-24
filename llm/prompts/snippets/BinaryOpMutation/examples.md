@@ -217,3 +217,44 @@ In the `lookupTokenSecondaryValue(...)` function, the subtraction in the conditi
 ###Desired_Output###
 
 In the definition of the `AFTER_EXECUTE_FLAG` constant, the bitwise left shift operation can be changed to multiplication without affecting the test suite. Consider adding test cases that depend on the value of this constant.
+
+
+**Example 5**:
+
+**Input Code Diff**:
+```diff
+--- original
++++ mutant
+@@ -91,7 +91,8 @@
+         pure
+     {
+         compare(
+-            bytes32(bytes2(param[param.length - 2:param.length])),
++            /// BinaryOpMutation(`-` |==> `/`) of: `bytes32(bytes2(param[param.length - 2:param.length])),`
++            bytes32(bytes2(param[param.length/2:param.length])),
+             bytes32(bytes2(scopedParam[scopedParam.length - 2:scopedParam.length])),
+             comparison
+         );
+```
+
+**Input Function Context**:
+```solidity
+    /**
+     * @dev Conforms the uint16 type to the necessary size considerations prior to comparison
+     */
+    function validate_uint16(bytes calldata param, bytes calldata scopedParam, IMiddleware.Comparators comparison)
+        internal
+        pure
+    {
+        compare(
+            /// BinaryOpMutation(`-` |==> `/`) of: `bytes32(bytes2(param[param.length - 2:param.length])),`
+            bytes32(bytes2(param[param.length/2:param.length])),
+            bytes32(bytes2(scopedParam[scopedParam.length - 2:scopedParam.length])),
+            comparison
+        );
+    }
+```
+
+###Desired_Output###
+
+In the `validate_uint16(...)` function, the subtraction in the slicing operation `bytes2(param[param.length - 2:param.length])` can be changed to division without affecting the test suite. Consider adding test cases that depend on the expected result of this slicing operation.
