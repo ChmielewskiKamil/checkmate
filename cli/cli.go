@@ -1012,8 +1012,13 @@ func printLLMRecommendationsReport(p *Program) {
 				foundRecommendations = true
 			}
 			fmt.Printf("\n### File: `%s`\n", filePath)
-			for _, rec := range fileData.FileSpecificRecommendations {
-				// Assuming rec is the raw LLM output
+
+			// Sort recommendations for easier de-duplication
+			recommendationsForThisFile := make([]string, len(fileData.FileSpecificRecommendations))
+			copy(recommendationsForThisFile, fileData.FileSpecificRecommendations)
+			sort.Strings(recommendationsForThisFile)
+
+			for _, rec := range recommendationsForThisFile { // Iterate over the sorted copy
 				fmt.Printf("- %s\n", rec) // Markdown list item
 			}
 		}
