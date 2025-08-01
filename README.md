@@ -8,14 +8,108 @@ generated mutations. The goal of Checkmate is to provide a hands-off experience
 for security researchers and developers to run a single command, go do something
 else and come back to see the analysis results.
 
-### TLDR;
+<!--toc:start-->
+- [Checkmate - The Gambit companion](#checkmate-the-gambit-companion)
+    - [Installation pre-requisites](#installation-pre-requisites)
+    - [Installing, upgrading or removing `checkmate` from your system](#installing-upgrading-or-removing-checkmate-from-your-system)
+      - [Using `go install`](#using-go-install)
+      - [Building from source](#building-from-source)
+      - [Upgrading your current version of `checkmate`](#upgrading-your-current-version-of-checkmate)
+      - [Uninstalling `checkmate`](#uninstalling-checkmate)
+        - [Linux/MacOS](#linuxmacos)
+        - [Windows](#windows)
+    - [Usage](#usage)
+    - [Using a local LLM to analyze the results](#using-a-local-llm-to-analyze-the-results)
+      - [Other tested models](#other-tested-models)
+<!--toc:end-->
 
-1. Install Checkmate with: `go install github.com/ChmielewskiKamil/checkmate@latest`
-2. `cd` into your Solidity's project root and run `checkmate`
-3. Wait and reap the benefits (for large repos this might take a couple of hours
-   to run from start to finish)
+### Installation pre-requisites
 
-**IMPORTANT**: If you want to generate mutants with gambit as well, make sure
-that you have [Gambit](https://github.com/Certora/gambit) installed since
-`checkmate` calls `gambit mutate --json gambit_config.json`.
+- You must have [Go >=1.23](https://go.dev/dl/) installed.
+- You must have Certora's [Gambit](https://github.com/Certora/gambit) installed.
+- You must have something to manage your local solidity compiler version. For
+  example [solc-select](https://github.com/crytic/solc-select) from Trail of
+  Bits.
 
+### Installing, upgrading or removing `checkmate` from your system
+
+#### Using `go install`
+
+You can use the go's toolchain to install `checkmate`. Install it with:
+```shell
+go install github.com/ChmielewskiKamil/checkmate@latest
+```
+
+#### Building from source
+
+Review the content of this repo, clone it and run `go build`.
+
+#### Upgrading your current version of `checkmate`
+
+Check your version with:
+```shell
+checkmate --version
+```
+
+Upgrade with:
+```shell
+go install github.com/ChmielewskiKamil/checkmate@latest
+```
+
+#### Uninstalling `checkmate`
+
+Removing `checkmate` from your OS is similar to other standalone Go binaries.
+
+##### Linux/MacOS
+
+List files to confirm `checkmate` is in the default location for Go binaries.
+
+```shell
+ls $HOME/go/bin
+```
+
+```shell
+rm $HOME/go/bin/checkmate
+```
+
+##### Windows
+
+List files to confirm `checkmate.exe` is in the default location for Go
+binaries.
+
+```shell
+dir %USERPROFILE%\go\bin 
+```
+
+```shell
+del %USERPROFILE%\go\bin\checkmate.exe
+```
+
+### Usage
+
+Navigate to the project that you want to analyze. 
+
+The usage of Checkmate is split in two stages. When you run the `checkmate`
+for the first time it will generate you the `gambit_config.json` file. This is
+what Gambit requires to generate the modified versions of your code (mutants).
+When using Gambit alone the config generation is time consuming as you have to
+configure the remappings and select the files that you want to analyze.
+Checkmate is doing that for you.
+
+Once the config is generated you can run the `checkmate` command for the second
+time. This time it will see that `gambit_config.json` is ready and will attempt
+to generate the mutations.
+
+### Using a local LLM to analyze the results
+
+The `Qwen2.5-Coder-7B-Instruct` gives superior output and is fast. On an M1
+MacBook Pro with 16 GBs of RAM it is able to analyze each missing test case in
+~20 seconds. 
+
+#### Other tested models
+
+- `DeepSeek-R1-Distill-Qwen-7B` gives decent results but is slow. It takes 
+  ~40-60 seconds to analyze a missing test case. This is a thinking model so it
+  also prints the thought process output. The output format is unreliable and
+  relatively hard to control while the `Qwen2.5-Coder-7B-Instruct` one-shots
+  each test case even without examples.

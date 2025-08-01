@@ -7,9 +7,9 @@ import (
 )
 
 func main() {
-	p := cli.New()
-	err := cli.Run(p)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	prog := cli.New()
+	if err := cli.Run(prog); err != nil {
+		fmt.Fprintf(os.Stderr, "\033[31m[Error] %v\033[0m\n", err)
+		os.Exit(1)
 	}
 }

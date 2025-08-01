@@ -7,29 +7,36 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strings"
 
 	"github.com/ChmielewskiKamil/checkmate/assert"
+	"github.com/ChmielewskiKamil/checkmate/db"
+	"github.com/ChmielewskiKamil/checkmate/llm"
+)
+
+const (
+	stateFileName = "checkmate_analysis_state.json"
+	saveInterval  = 10 // Save state every 10 mutants tested
 )
 
 type Program struct {
-	totalGeneratedMutants uint32
-	totalUnslainMutants   uint32
-	totalSlainMutants     uint32
-	perFileGenerated      map[string]uint32
-	perFileUnslain        map[string]uint32
-	perFileSlain          map[string]uint32
-
 	testCMD          *string // The command to run the test suite e.g. 'forge test'.
 	mutantsDIR       *string // Path to the directory where generated mutants are stored.
 	gambitConfigPath *string // Path to gambit's config json file
 	skipGambit       *bool   // If you don't have or don't want to run gambit, skip it.
 	contractsDIR     *string // Path to the folder where Solidity contracts are store. Default is "src/".
+	analyzeMutations *bool   // Whether to analyze mutations with LLM or not
+	printReport      *bool   // Pretty print the mutation analysis report after all is done.
+
+	// dbState holds all persistent information, loaded from and saved to mutationAnalysisStateFile.
+	// All statistics and progress will be read from and written to this struct.
+	dbState db.MutationAnalysis
 }
 
 type SolidityFile struct {
@@ -45,24 +52,103 @@ type GambitEntry struct {
 func New() *Program {
 	p := Program{}
 
-	perFileGenerated := make(map[string]uint32)
-	p.perFileGenerated = perFileGenerated
-
-	perFileUnslain := make(map[string]uint32)
-	p.perFileUnslain = perFileUnslain
-
-	perFileSlain := make(map[string]uint32)
-	p.perFileSlain = perFileSlain
-
 	parseCmdFlags(&p)
+
+	// Load existing state or initialize a new one
+	loadedState, err := db.LoadStateFromFile(stateFileName)
+	if err != nil {
+		// This error means something went wrong beyond "file not found"
+		// (e.g., corrupt JSON, permissions).
+		log.Fatalf("[Critical] Error loading state from %s: %v. If the file is corrupt, please remove it to start fresh.", stateFileName, err)
+	}
+	p.dbState = loadedState // Assign loaded data (or fresh initialized struct if file didn't exist)
 
 	return &p
 }
 
-func Run(p *Program) error {
-	// Pre-conditions
+func Run(p *Program) (err error) {
+	var exitedForSpecialReason bool = false
+	// Attempt to save state on exit, especially if an error occurs.
+	// This is a best-effort save. A more robust solution might involve signal handling.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "\033[31m[CRITICAL] Panic occurred: %v. Attempting to save state...\033[0m\n", r)
+			saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
+			if saveErr != nil {
+				fmt.Fprintf(os.Stderr, "\033[31m[Error] Failed to save state during panic: %v\033[0m\n", saveErr)
+			} else {
+				fmt.Println("\033[32m[Info] State saved successfully during panic recovery.\033[0m")
+			}
+			panic(r) // Re-throw the panic
+		}
+
+		// If exited for --print or config-gen-only, don't show standard save messages.
+		if exitedForSpecialReason {
+			return
+		}
+
+		// 'err' is the named return value from Run().
+		// The main function will be responsible for printing this 'err' to the user.
+		// This defer will log its own actions regarding state saving.
+		actionMessage := "final state"
+		if err != nil { // If Run is returning an error
+			actionMessage = "state due to an error in the main program loop"
+		}
+
+		fmt.Printf("[Info] Attempting to save %s...\n", actionMessage)
+
+		saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
+		if saveErr != nil {
+			fmt.Fprintf(os.Stderr, "\033[31m[Error] Failed to save state to %s: %v\033[0m\n", stateFileName, saveErr)
+			if err == nil {
+				err = fmt.Errorf("failed to save final state: %w", saveErr)
+			}
+		} else {
+			if err == nil {
+				fmt.Println("\033[32m[Info] Final state saved successfully.\033[0m")
+			} else {
+				fmt.Println("\033[33m[Info] State saved despite earlier errors.\033[0m")
+			}
+		}
+	}()
+
+	// --- Print Report Mode ---
+	if *p.printReport {
+		if p.dbState.OverallStats.MutantsTotalGenerated == 0 && len(p.dbState.AnalyzedFiles) == 0 {
+			fmt.Println("\033[33m[Warning] No analysis data found in state file. Nothing to print.\033[0m")
+			fmt.Printf("[Info] State file used: %s\n", stateFileName)
+			return nil
+		}
+		fmt.Println("--- Checkmate Analysis Report ---")
+		printMutationStatsReport(p)
+		printLLMRecommendationsReport(p)
+		printLLMAnalysisErrorsReport(p)
+		fmt.Println("--- End of Report ---")
+		exitedForSpecialReason = true
+		return nil // Exit successfully after printing
+	}
+
+	// ---- LLM Analysis Mode ----
+	if *p.analyzeMutations {
+		fmt.Println("[Info] LLM Analysis mode selected.")
+
+		llmErr := llm.AnalyzeMutations(
+			*p.mutantsDIR,      // Path to the mutants directory (e.g., ./gambit_out/mutants)
+			&p.dbState,         // Pointer to the persistent state object
+			db.SaveStateToFile, // The actual save function
+			stateFileName,      // The name of the state file
+		)
+		if llmErr != nil {
+			return fmt.Errorf("LLM analysis failed: %w", llmErr) // Propagate error
+		}
+
+		fmt.Println("[Info] LLM Analysis completed.")
+		return nil // LLM analysis mode finishes here
+	}
 
 	// Actions
+	// ---- Slaying Mode ----
+	gambitWasRunThisSession := false
 	if !mutantsExist(p) && !*p.skipGambit {
 		if !gambitConfigExists(p) {
 			err := generateGambitConfig(p)
@@ -70,34 +156,168 @@ func Run(p *Program) error {
 				return err
 			}
 			fmt.Println("\033[33m[Info] Generated gambit config successfuly.\n       Please review it and remove any files that you don't intend to test e.g. interfaces.\n       This will speed up the time it takes for gambit to generate the mutants and later\n       to run the analysis. After that re-run checkmate.\033[0m")
-			os.Exit(0)
+			exitedForSpecialReason = true
+			return nil
 		}
 
 		// TODO: Before running Gambit ensure that the Solidity compiler version is
 		// set to correct version.
 
-		runGambit(p)
+		runGambit(p) // This generates mutants
+		gambitWasRunThisSession = true
 	}
+
+	var generatedCountBeforeInitialization int32
+	if !gambitWasRunThisSession {
+		generatedCountBeforeInitialization = p.dbState.OverallStats.MutantsTotalGenerated
+	}
+
+	initializeGeneratedMutantStats(p)
+
+	var baselineEstablishedThisSession bool
+	if gambitWasRunThisSession {
+		baselineEstablishedThisSession = true
+		fmt.Println("[Info] Generated mutant counts refreshed after Gambit run.")
+	} else {
+		if generatedCountBeforeInitialization == 0 && p.dbState.OverallStats.MutantsTotalGenerated > 0 {
+			baselineEstablishedThisSession = true
+			fmt.Println("[Info] Baseline mutant counts initialized from existing mutants directory (state was empty).")
+		}
+	}
+
+	if baselineEstablishedThisSession {
+		fmt.Println("[Info] Saving baseline mutant statistics...")
+		saveErr := db.SaveStateToFile(stateFileName, &p.dbState)
+		if saveErr != nil {
+			log.Printf("[Warning] Failed to save baseline state after populating/refreshing stats: %v\n", saveErr)
+		} else {
+			fmt.Println("[Info] Baseline mutant statistics saved successfully.")
+		}
+	}
+
+	fmt.Printf("[Info] Loaded analysis state from %s. Overall Mutants Generated: %d\n",
+		stateFileName, p.dbState.OverallStats.MutantsTotalGenerated)
+
+	// TODO: If the run was stopped and now resumed, there is most likely the
+	// backup file in the contracts folder and the original file might contain
+	// the mutation.
+	// Implement a more robust backup of the OG file or simply restore the
+	// backup here.
+	checkForAndRestoreInterruptedState(p)
 
 	fmt.Println("[Info] Attempting an initial test run to check if your test suite is ready for the mutation analysis.")
 	if !testSuitePasses(p, true) {
-		return fmt.Errorf(`[Error] Your test suite fails the initial run.
+		return fmt.Errorf(`Your test suite fails the initial run.
         The test suite must be passing when the code is not mutated yet!
         Ensure that you have no failing tests before you attempt mutation testing your code.`)
 	}
 
-	saveMutationStats(p)
 	printMutationStats(p)
 
-	err := testMutations(p)
-	if err != nil {
-		return err
+	testErr := testMutations(p)
+	if testErr != nil {
+		return fmt.Errorf("Testing mutations failed: %w", testErr)
 	}
 
-	saveMutationStats(p)
 	printMutationStats(p)
+	fmt.Println("[Info] Mutation analysis completed.")
+
 	// Post-conditions
+
 	return nil
+}
+
+func initializeGeneratedMutantStats(p *Program) {
+	fmt.Println("[Info] Initializing mutant stats in persistent state...")
+
+	mutants := listSolidityFiles(*p.mutantsDIR)
+
+	if len(mutants) == 0 && p.dbState.OverallStats.MutantsTotalGenerated == 0 {
+		fmt.Println("\033[33m[Warning] No mutants found in directory and no prior state. Nothing to initialize.\033[0m")
+		return
+	}
+
+	// Only initialize if not already meaningfully populated (e.g. from a previous run)
+	if p.dbState.OverallStats.MutantsTotalGenerated == 0 {
+		p.dbState.OverallStats.MutantsTotalGenerated = int32(len(mutants))
+		// Reset other overall stats for a fresh count based on newly listed mutants
+		p.dbState.OverallStats.MutantsTotalSlain = 0
+		// Initially all generated are unslain until tested
+		p.dbState.OverallStats.MutantsTotalUnslain = 0
+		p.dbState.OverallStats.MutationScore = 0.0
+
+		// Initialize per-file generated counts
+		if p.dbState.AnalyzedFiles == nil {
+			p.dbState.AnalyzedFiles = make(map[string]db.AnalyzedFile)
+		}
+
+		tempPerFileGenerated := make(map[string]int32)
+
+		for _, mutant := range mutants {
+			// Gambit usually outputs mutants in subdirs like "mutants/1/src/Contract.sol"
+			// We need to get the original contract path that this mutant belongs to.
+			// This requires parsing the mutant path or having this info from gambit_results.json.
+			// TODO: This could try to see if gambit_result.json is available. If not
+			// fall back to this mutant dir parsing logic.
+
+			// Path like src/Contract.sol
+			originalFilePath := getOriginalFilePathFromMutantPath(mutant.PathFromProjectRoot, *p.mutantsDIR)
+			if originalFilePath == "" {
+				log.Printf("[Warning] Could not determine original file path for mutant %s", mutant.PathFromProjectRoot)
+				continue
+			}
+
+			tempPerFileGenerated[originalFilePath]++
+		}
+
+		for path, count := range tempPerFileGenerated {
+			entry, ok := p.dbState.AnalyzedFiles[path]
+			if !ok {
+				entry = db.AnalyzedFile{
+					FileSpecificStats:           db.FileSpecificStats{},
+					FileSpecificRecommendations: make([]string, 0),
+					LLMAnalysisOutcomes:         make(map[string]db.MutantLLMAnalysisOutcome),
+				}
+			} else {
+				// If entry exists from loaded state, ensure sub-maps/slices are not nil
+				if entry.FileSpecificRecommendations == nil {
+					entry.FileSpecificRecommendations = make([]string, 0)
+				}
+				if entry.LLMAnalysisOutcomes == nil {
+					entry.LLMAnalysisOutcomes = make(map[string]db.MutantLLMAnalysisOutcome)
+				}
+			}
+			entry.FileSpecificStats.MutantsTotalGenerated = count
+			entry.FileSpecificStats.MutantsTotalSlain = 0   // Reset for new count
+			entry.FileSpecificStats.MutantsTotalUnslain = 0 // Reset
+			entry.FileSpecificStats.MutationScore = 0.0
+			p.dbState.AnalyzedFiles[path] = entry
+		}
+		fmt.Printf("[Info] Initialized stats for %d generated mutants across %d files.\n",
+			p.dbState.OverallStats.MutantsTotalGenerated, len(p.dbState.AnalyzedFiles))
+	}
+}
+
+func getOriginalFilePathFromMutantPath(mutantPath, mutantsBaseDir string) string {
+	// Example: mutantPath = "gambit_out/mutants/15/src/MyContract.sol"
+	//          contractsDir = "src"
+	//          mutantsBaseDir = "gambit_out/mutants"
+	// We want to extract "src/MyContract.sol"
+
+	// Clean paths
+	mutantsBaseDirClean := filepath.Clean(mutantsBaseDir) + string(filepath.Separator) // e.g., "gambit_out/mutants/"
+
+	if strings.HasPrefix(mutantPath, mutantsBaseDirClean) {
+		// Remaining path: "15/src/MyContract.sol"
+		relativePathWithMutantId := strings.TrimPrefix(mutantPath, mutantsBaseDirClean)
+		// Find the second separator to skip the mutant ID part
+		parts := strings.SplitN(relativePathWithMutantId, string(filepath.Separator), 2)
+		if len(parts) == 2 {
+			return parts[1] // Should be "src/MyContract.sol"
+		}
+	}
+	log.Printf("[Debug] Failed to parse original path from mutant path: %s", mutantPath)
+	return "" // Or handle error appropriately
 }
 
 func parseCmdFlags(p *Program) {
@@ -131,6 +351,14 @@ func parseCmdFlags(p *Program) {
 		"Specify the path to the folder with your smart contracts. For hardhat repositories this is usually './contracts'.",
 	)
 
+	analyzeMutations := flag.Bool(
+		"analyze",
+		false,
+		"Analyze the mutations present in the gambit_out/mutants/ directory with the help of an LLM.",
+	)
+
+	printReport := flag.Bool("print", false, "Print a summary report from the last analysis state and exit.")
+
 	flag.Parse()
 
 	if *versionFlag {
@@ -153,6 +381,8 @@ func parseCmdFlags(p *Program) {
 	p.skipGambit = skipGambit
 	p.gambitConfigPath = gambitConfigPath
 	p.contractsDIR = contractFilesPath
+	p.analyzeMutations = analyzeMutations
+	p.printReport = printReport
 
 	// Post-conditions
 	// TODO: Gambit config should be a valid json file
@@ -362,65 +592,37 @@ func testSuitePasses(p *Program, detailedLogs bool) bool {
 	// Post-conditions
 }
 
-func saveMutationStats(p *Program) {
-	// Pre-conditions
-	assert.PathExists(*p.mutantsDIR)
-
-	mutants := listSolidityFiles(*p.mutantsDIR)
-
-	if p.totalGeneratedMutants == 0 {
-		assert.True(len(mutants) > 0, "There must be mutants in the pre-analysis phase.")
-		assert.True(p.totalUnslainMutants == 0, "Before analysis we don't know if there will be unslain mutants.")
-		assert.True(p.totalSlainMutants == 0, "Before analysis we don't know if there will be slain mutants.")
-
-		p.totalGeneratedMutants = uint32(len(mutants))
-		for _, mutant := range mutants {
-			p.perFileGenerated[mutant.Filename]++
-		}
-
-		assert.True(len(p.perFileGenerated) > 0, "There should be non-zero keys in the per file generated mutants mapping.")
-		assert.True(len(p.perFileUnslain) == 0, "There should be zero keys in the per file unslain mutants mapping.")
-		assert.True(len(p.perFileSlain) == 0, "There should be zero keys in the per file slain mutants mapping.")
-
-		return
-	}
-
-	p.totalUnslainMutants = uint32(len(mutants))
-	p.totalSlainMutants = p.totalGeneratedMutants - p.totalUnslainMutants
-
-	for _, mutant := range mutants {
-		p.perFileUnslain[mutant.Filename]++
-
-		// perFileSlain are incremented during the analysis
-	}
-
-	// Post-conditions
-	assert.True(len(p.perFileUnslain) >= 0, "There should be unslain unless test suite scores 100%")
-}
-
 func printMutationStats(p *Program) {
-	fmt.Printf("--------- Mutation Stats - Start ---------\n\n")
+	stats := p.dbState.OverallStats
+	analyzedFiles := p.dbState.AnalyzedFiles
 
-	fmt.Printf("Total mutants generated: %d\n", p.totalGeneratedMutants)
-	fmt.Printf("Total mutants unslain: %d\n", p.totalUnslainMutants)
-	fmt.Printf("Total mutants slain: %d\n", p.totalSlainMutants)
-	fmt.Printf("Mutation Score: %.2f%%\n\n", calculateMutationScore(p.totalSlainMutants, p.totalGeneratedMutants))
-	fmt.Printf("Below is the per file breakdown: \n")
-	for file, count := range p.perFileGenerated {
-		fmt.Printf("%s: generated %d\n", file, count)
-		fmt.Printf("%s: unslain   %d\n", file, p.perFileUnslain[file])
-		fmt.Printf("%s: slain     %d\n", file, p.perFileSlain[file])
-		fmt.Printf("%s: mutation score %.2f%%\n", file, calculateMutationScore(p.perFileSlain[file], count))
+	fmt.Printf("\n--------- Mutation Stats - Start ---------\n\n")
+
+	fmt.Printf("Total mutants generated: %d\n", stats.MutantsTotalGenerated)
+	fmt.Printf("Total mutants unslain: %d\n", stats.MutantsTotalUnslain)
+	fmt.Printf("Total mutants slain: %d\n", stats.MutantsTotalSlain)
+	fmt.Printf("Overall Mutation Score: %.2f%%\n\n", stats.MutationScore)
+
+	if len(analyzedFiles) > 0 {
+		fmt.Printf("Below is the per file breakdown: \n")
+		// Need to iterate in a sorted order for consistent output if possible, or just range
+		for filePath, fileData := range analyzedFiles {
+			fmt.Printf("File: %s\n", filePath)
+			fmt.Printf("  Generated: %d\n", fileData.FileSpecificStats.MutantsTotalGenerated)
+			unslainInFile := fileData.FileSpecificStats.MutantsTotalGenerated - fileData.FileSpecificStats.MutantsTotalSlain
+			fmt.Printf("  Unslain:   %d\n", unslainInFile) // Calculate derived value
+			fmt.Printf("  Slain:     %d\n", fileData.FileSpecificStats.MutantsTotalSlain)
+			scoreInFile := float32(0.0)
+			if fileData.FileSpecificStats.MutantsTotalGenerated > 0 {
+				scoreInFile = (float32(fileData.FileSpecificStats.MutantsTotalSlain) / float32(fileData.FileSpecificStats.MutantsTotalGenerated)) * 100
+			}
+			fmt.Printf("  Score:     %.2f%%\n", scoreInFile) // Calculate derived value
+		}
+	} else {
+		fmt.Println("No per-file data available yet.")
 	}
 
 	fmt.Printf("\n--------- Mutation Stats - End -----------\n\n")
-}
-
-func calculateMutationScore(slain, total uint32) float64 {
-	if total == 0 {
-		return 0.0 // Avoid division by zero
-	}
-	return (float64(slain) / float64(total)) * 100
 }
 
 func listSolidityFiles(pathToContracts string) []SolidityFile {
@@ -563,63 +765,170 @@ func checkRemappingExists(path string) bool {
 
 func testMutations(p *Program) error {
 	// Pre-conditions
-	assert.True(p.totalGeneratedMutants > 0, "Can't perform analysis if there are no mutants.")
-	assert.True(p.totalUnslainMutants == 0, "Before performing the analysis there must be 0 unslain mutants.")
+	assert.True(p.dbState.OverallStats.MutantsTotalGenerated > 0, "Can't perform analysis if there are no mutants.")
+
+	// Ensure SlayingProgress map is initialized
+	if p.dbState.SlayingProgress.MutantsProcessed == nil {
+		p.dbState.SlayingProgress.MutantsProcessed = make(map[string]bool)
+	}
 
 	fmt.Printf("\n\033[32m[Info] Starting the mutation analysis.\033[0m\n\n")
 
-	mutants := listSolidityFiles(*p.mutantsDIR)
-	for _, mutant := range mutants {
-		// Given: gambit_out/mutants/001/src/staking/Pool.sol
-		// We want to copy to /src/staking/Pool.sol
+	mutantFiles := listSolidityFiles(*p.mutantsDIR)
+	mutantsProcessedCount := len(p.dbState.SlayingProgress.MutantsProcessed)
+	consecutiveSkippedCount := 0 // Counter for consecutively skipped mutants
 
-		// From "./src" -> "/src/"
-		normalizedContractsDirPath := path.Clean(*p.contractsDIR) + string(os.PathSeparator)
+	for _, mutantFile := range mutantFiles {
+		mutantIdentifier := mutantFile.PathFromProjectRoot // Using path as an ID
 
-		idx := strings.Index(mutant.PathFromProjectRoot, normalizedContractsDirPath)
-		if idx == -1 {
-			return fmt.Errorf("[Error] Failed to find the common path between contracts and mutants directories.")
+		if p.dbState.SlayingProgress.MutantsProcessed[mutantIdentifier] {
+			consecutiveSkippedCount++
+			continue // Skip already processed mutants
 		}
 
-		// From "gambit_out/mutants/001/src/staking/Pool.sol" -> "src/staking/Pool.sol"
-		destinationPath := mutant.PathFromProjectRoot[idx:]
+		// If we reach here, this mutant is not skipped.
+		// If there were previously skipped mutants in a sequence, print a summary for them.
+		if consecutiveSkippedCount > 0 {
+			if consecutiveSkippedCount == 1 {
+				fmt.Printf("[Info] Skipped 1 already tested mutant (survivor).\n")
+			} else {
+				fmt.Printf("[Info] Skipped %d already tested mutants (survivors).\n", consecutiveSkippedCount)
+			}
+			consecutiveSkippedCount = 0 // Reset for the next potential batch of skipped ones
+		}
 
+		originalFilePath := getOriginalFilePathFromMutantPath(mutantFile.PathFromProjectRoot, *p.mutantsDIR)
+		if originalFilePath == "" {
+			log.Printf("[Warning] Could not determine original file for mutant %s. Skipping.", mutantFile.PathFromProjectRoot)
+			p.dbState.SlayingProgress.MutantsProcessed[mutantIdentifier] = true // Mark as processed to avoid re-attempt
+			continue
+		}
+
+		// Ensure AnalyzedFile entry exists
+		fileAnalysisEntry, ok := p.dbState.AnalyzedFiles[originalFilePath]
+		if !ok {
+			log.Printf("[Warning] No analysis entry for original file %s. Initializing.", originalFilePath)
+			fileAnalysisEntry = db.AnalyzedFile{
+				FileSpecificStats: db.FileSpecificStats{
+					// MutantsTotalGenerated should have been set by initializeGeneratedMutantStats
+					MutantsTotalGenerated: p.dbState.AnalyzedFiles[originalFilePath].FileSpecificStats.MutantsTotalGenerated,
+				},
+				FileSpecificRecommendations: []string{},
+			}
+		}
+
+		destinationPath := originalFilePath // Path in the project to overwrite with mutant
 		backupPath := destinationPath + ".bak"
+
 		err := copyFile(destinationPath, backupPath)
 		if err != nil {
-			return fmt.Errorf("[Error] Failed to backup original file %s: %v", destinationPath, err)
+			return fmt.Errorf("failed to backup original file %s: %w", destinationPath, err)
 		}
 
-		err = copyFile(mutant.PathFromProjectRoot, destinationPath)
+		err = copyFile(mutantFile.PathFromProjectRoot, destinationPath)
 		if err != nil {
-			return fmt.Errorf(
-				"[Error] There was a problem copying the mutant to the destination path: %s, %s",
-				destinationPath, err)
+			_ = os.Remove(backupPath) // Attempt cleanup
+			return fmt.Errorf("failed to copy mutant %s to %s: %w", mutantFile.PathFromProjectRoot, destinationPath, err)
 		}
 
-		if !testSuitePasses(p, false) {
-			fmt.Printf("[Info] Mutant slain 🗡️ (%s)\n", mutant.PathFromProjectRoot)
-			mutantFolder := mutant.PathFromProjectRoot[:idx]
-			err := os.RemoveAll(mutantFolder)
+		if !testSuitePasses(p, false) { // Test suite fails -> mutant is slain
+			fmt.Printf("[Info] Mutant slain 🗡️ (%s)\n", mutantFile.PathFromProjectRoot)
+
+			var mutantDirToRemove string // Will hold the path like "gambit_out/mutants/492"
+
+			cleanMutantsBaseDir := filepath.Clean(*p.mutantsDIR)                  // gambit_out/mutants/
+			cleanMutantFilePath := filepath.Clean(mutantFile.PathFromProjectRoot) // gambit_out/mutants/492/src/Mutant.sol
+
+			// Get the path of the mutant file relative to the base mutants directory
+			// e.g., if base is "gambit_out/mutants" and file is "gambit_out/mutants/492/src/File.sol",
+			// relPath will be "492/src/File.sol" (or "492\src\File.sol" on Windows)
+			relPath, err := filepath.Rel(cleanMutantsBaseDir, cleanMutantFilePath)
 			if err != nil {
-				return fmt.Errorf("Couldn't remove slain mutant from the mutant's dir: %s", err)
+				fmt.Printf("\033[31m[Warning] Could not determine relative path for mutant %s regarding base %s: %v. Skipping removal.\033[0m",
+					cleanMutantFilePath, cleanMutantsBaseDir, err)
+			} else {
+				// relPath should now be something like "492/src/File.sol" or "492/File.sol" or "492/src/libraries/File.sol"
+				// We want the first component of this relative path, which is the mutant ID folder.
+				parts := strings.Split(relPath, string(filepath.Separator))
+				if len(parts) > 0 && parts[0] != "" && parts[0] != "." && parts[0] != ".." {
+					mutantIdFolderName := parts[0] // This should be "492"
+					mutantDirToRemove = filepath.Join(cleanMutantsBaseDir, mutantIdFolderName)
+				} else {
+					log.Printf("\033[31m[Warning] Could not extract a valid mutant ID folder from relative path '%s' (derived from %s). Skipping removal.\033[0m",
+						relPath, cleanMutantFilePath)
+				}
 			}
 
-			p.perFileSlain[mutant.Filename]++
+			if mutantDirToRemove != "" {
+				// 1. Ensure it's still prefixed by the base mutants directory (double check after join).
+				// 2. Ensure we are not trying to remove the base mutants directory itself or current dir.
+				finalCleanMutantDirToRemove := filepath.Clean(mutantDirToRemove)
 
+				if strings.HasPrefix(finalCleanMutantDirToRemove, cleanMutantsBaseDir) &&
+					finalCleanMutantDirToRemove != cleanMutantsBaseDir &&
+					finalCleanMutantDirToRemove != "." {
+
+					if errRem := os.RemoveAll(finalCleanMutantDirToRemove); errRem != nil {
+						log.Printf("[Warning] Failed to remove slain mutant directory %s: %v\n", finalCleanMutantDirToRemove, errRem)
+					}
+				} else {
+					log.Printf("[Warning] Sanity check failed: Path '%s' derived for removal is not a valid mutant sub-directory of '%s'. Removal skipped.",
+						finalCleanMutantDirToRemove, cleanMutantsBaseDir)
+				}
+			}
+
+			p.dbState.OverallStats.MutantsTotalSlain++
+			fileAnalysisEntry.FileSpecificStats.MutantsTotalSlain++
 		} else {
-			fmt.Printf("[Info] Test suite didn't catch the bug ❌ Mutant unslain: %s.\n", mutant.PathFromProjectRoot)
+			fmt.Printf("[Info] Test suite didn't catch the bug ❌ Mutant unslain: (%s)\n", mutantFile.PathFromProjectRoot)
+			// Update total unslain as derivation of total generated and slain below.
 		}
 
-		// Ensure original file is restored when function returns
+		// Restore original file
 		err = copyFile(backupPath, destinationPath)
 		if err != nil {
-			return fmt.Errorf("Couldn't restore the backup file at the destination: %s", err)
+			return fmt.Errorf("failed to restore backup for %s: %w", destinationPath, err)
 		}
 		err = os.Remove(backupPath)
 		if err != nil {
-			return fmt.Errorf("Couldn't remove the backup file: %s", err)
+			return fmt.Errorf("failed to remove backup file %s: %w", backupPath, err)
 		}
+
+		// Update stats after test
+		p.dbState.SlayingProgress.MutantsProcessed[mutantIdentifier] = true
+
+		// Recalculate unslain counts and scores
+		fileAnalysisEntry.FileSpecificStats.MutantsTotalUnslain = fileAnalysisEntry.FileSpecificStats.MutantsTotalGenerated - fileAnalysisEntry.FileSpecificStats.MutantsTotalSlain
+
+		if fileAnalysisEntry.FileSpecificStats.MutantsTotalGenerated > 0 {
+			fileAnalysisEntry.FileSpecificStats.MutationScore =
+				(float32(fileAnalysisEntry.FileSpecificStats.MutantsTotalSlain) / float32(fileAnalysisEntry.FileSpecificStats.MutantsTotalGenerated)) * 100
+		}
+
+		p.dbState.AnalyzedFiles[originalFilePath] = fileAnalysisEntry
+
+		mutantsProcessedCount++
+
+		if mutantsProcessedCount%saveInterval == 0 {
+			p.dbState.OverallStats.MutantsTotalUnslain = p.dbState.OverallStats.MutantsTotalGenerated - p.dbState.OverallStats.MutantsTotalSlain
+			if p.dbState.OverallStats.MutantsTotalGenerated > 0 {
+				p.dbState.OverallStats.MutationScore =
+					(float32(p.dbState.OverallStats.MutantsTotalSlain) / float32(p.dbState.OverallStats.MutantsTotalGenerated)) * 100
+			}
+			if errSave := db.SaveStateToFile(stateFileName, &p.dbState); errSave != nil {
+				log.Printf("[Warning] Failed to save state during testing mutations: %v", errSave)
+			} else {
+				fmt.Printf("\033[32m[Info] Progress saved. Processed %d mutants so far. %d mutants remaining.\033[0m\n",
+					mutantsProcessedCount, int(p.dbState.OverallStats.MutantsTotalGenerated)-mutantsProcessedCount)
+			}
+		}
+	}
+
+	// Final calculation for overall unslain and score
+	p.dbState.OverallStats.MutantsTotalUnslain = p.dbState.OverallStats.MutantsTotalGenerated - p.dbState.OverallStats.MutantsTotalSlain
+	if p.dbState.OverallStats.MutantsTotalGenerated > 0 {
+		p.dbState.OverallStats.MutationScore =
+			(float32(p.dbState.OverallStats.MutantsTotalSlain) / float32(p.dbState.OverallStats.MutantsTotalGenerated)) * 100
 	}
 
 	return nil
@@ -642,4 +951,195 @@ func copyFile(src, dst string) error {
 
 	_, err = io.Copy(destinationFile, sourceFile)
 	return err
+}
+
+func printMutationStatsReport(p *Program) {
+	stats := p.dbState.OverallStats
+	analyzedFiles := p.dbState.AnalyzedFiles
+
+	fmt.Printf("\n## Mutation Analysis Statistics\n\n")
+
+	fmt.Printf("### Overall Statistics\n")
+	fmt.Printf("- Total mutants generated: %d\n", stats.MutantsTotalGenerated)
+	// Ensure Unslain is calculated if not already up-to-date from a full run
+	actualUnslain := stats.MutantsTotalGenerated - stats.MutantsTotalSlain
+	fmt.Printf("- Total mutants unslain: %d\n", actualUnslain)
+	fmt.Printf("- Total mutants slain: %d\n", stats.MutantsTotalSlain)
+	fmt.Printf("- Overall Mutation Score: %.2f%%\n\n", stats.MutationScore)
+
+	if len(analyzedFiles) > 0 {
+		fmt.Printf("### Per-File Breakdown\n")
+		// Sort file paths for consistent output
+		sortedFilePaths := make([]string, 0, len(analyzedFiles))
+		for k := range analyzedFiles {
+			sortedFilePaths = append(sortedFilePaths, k)
+		}
+		sort.Strings(sortedFilePaths)
+
+		for _, filePath := range sortedFilePaths {
+			fileData := analyzedFiles[filePath]
+			fmt.Printf("\n#### File: `%s`\n", filePath)
+			fmt.Printf("- Generated: %d\n", fileData.FileSpecificStats.MutantsTotalGenerated)
+			fileUnslain := fileData.FileSpecificStats.MutantsTotalGenerated - fileData.FileSpecificStats.MutantsTotalSlain
+			fmt.Printf("- Unslain:   %d\n", fileUnslain)
+			fmt.Printf("- Slain:     %d\n", fileData.FileSpecificStats.MutantsTotalSlain)
+			fmt.Printf("- Score:     %.2f%%\n", fileData.FileSpecificStats.MutationScore)
+		}
+	} else if stats.MutantsTotalGenerated > 0 { // If overall stats exist but no per-file breakdown yet
+		fmt.Println("No per-file breakdown available in the current state.")
+	}
+}
+
+func printLLMRecommendationsReport(p *Program) {
+	analyzedFiles := p.dbState.AnalyzedFiles
+	if len(analyzedFiles) == 0 {
+		return // Nothing to print if no files were analyzed
+	}
+
+	fmt.Printf("\n## LLM Test Case Recommendations\n")
+	foundRecommendations := false
+
+	sortedFilePaths := make([]string, 0, len(analyzedFiles))
+	for k := range analyzedFiles {
+		sortedFilePaths = append(sortedFilePaths, k)
+	}
+	sort.Strings(sortedFilePaths)
+
+	for _, filePath := range sortedFilePaths {
+		fileData := analyzedFiles[filePath]
+		if fileData.FileSpecificRecommendations != nil && len(fileData.FileSpecificRecommendations) > 0 {
+			if !foundRecommendations {
+				foundRecommendations = true
+			}
+			fmt.Printf("\n### File: `%s`\n", filePath)
+
+			// Sort recommendations for easier de-duplication
+			recommendationsForThisFile := make([]string, len(fileData.FileSpecificRecommendations))
+			copy(recommendationsForThisFile, fileData.FileSpecificRecommendations)
+			sort.Strings(recommendationsForThisFile)
+
+			for _, rec := range recommendationsForThisFile { // Iterate over the sorted copy
+				fmt.Printf("- %s\n", rec) // Markdown list item
+			}
+		}
+	}
+
+	if !foundRecommendations {
+		fmt.Println("No LLM recommendations found in the current analysis state.")
+	}
+	fmt.Println()
+}
+
+func printLLMAnalysisErrorsReport(p *Program) {
+	analyzedFiles := p.dbState.AnalyzedFiles
+	if len(analyzedFiles) == 0 {
+		return
+	}
+
+	fmt.Printf("\n## LLM Analysis Issues Encountered\n")
+	foundErrors := false
+
+	sortedFilePaths := make([]string, 0, len(analyzedFiles))
+	for k := range analyzedFiles {
+		sortedFilePaths = append(sortedFilePaths, k)
+	}
+	sort.Strings(sortedFilePaths)
+
+	for _, filePath := range sortedFilePaths {
+		fileData := analyzedFiles[filePath]
+		if fileData.LLMAnalysisOutcomes != nil && len(fileData.LLMAnalysisOutcomes) > 0 {
+			var fileErrors []string
+			// Sort mutant IDs for consistent error reporting order
+			mutantIDsWithErrors := make([]string, 0, len(fileData.LLMAnalysisOutcomes))
+			for mutantID := range fileData.LLMAnalysisOutcomes {
+				mutantIDsWithErrors = append(mutantIDsWithErrors, mutantID)
+			}
+			sort.Strings(mutantIDsWithErrors)
+
+			for _, mutantID := range mutantIDsWithErrors {
+				outcome := fileData.LLMAnalysisOutcomes[mutantID]
+				if outcome.Status != "COMPLETED" && outcome.ErrorMessage != "" {
+					fileErrors = append(fileErrors, fmt.Sprintf("  - Mutant ID `%s`: %s (Status: %s, Timestamp: %s)",
+						mutantID, outcome.ErrorMessage, outcome.Status, outcome.Timestamp))
+				}
+			}
+
+			if len(fileErrors) > 0 {
+				if !foundErrors {
+					foundErrors = true
+				}
+				fmt.Printf("\n### File: `%s`\n", filePath)
+				for _, errMsg := range fileErrors {
+					fmt.Println(errMsg)
+				}
+			}
+		}
+	}
+
+	if !foundErrors {
+		fmt.Println("No LLM analysis errors or issues recorded.")
+	}
+	fmt.Println()
+}
+
+func checkForAndRestoreInterruptedState(p *Program) {
+	if p.contractsDIR == nil || *p.contractsDIR == "" {
+		fmt.Println("[Info] Contracts directory not specified; skipping check for leftover '.sol.bak' files.")
+		return
+	}
+
+	originalContractFiles := listSolidityFiles(*p.contractsDIR)
+
+	restoredCount := 0
+	if len(originalContractFiles) == 0 {
+		fmt.Printf("[Info] No source files found in '%s' to check for backups.\n", *p.contractsDIR)
+		return
+	}
+
+	for _, solFile := range originalContractFiles {
+		originalFilePath := solFile.PathFromProjectRoot
+		backupFilePath := originalFilePath + ".bak"
+
+		// Check if the backup file exists
+		backupInfo, errBak := os.Stat(backupFilePath)
+		if errBak == nil && !backupInfo.IsDir() {
+			originalInfo, errOrig := os.Stat(originalFilePath)
+
+			if os.IsNotExist(errOrig) {
+				log.Printf("\033[33m[Warning] Found backup %s, but original file %s is missing! Restoring from backup.\033[0m\n", backupFilePath, originalFilePath)
+			} else if errOrig != nil {
+				log.Printf("\033[31m[Error] Found backup %s, but could not stat original file %s: %v. Manual check required.\033[0m\n", backupFilePath, originalFilePath, errOrig)
+				continue // Skip to next file
+			} else if originalInfo.IsDir() {
+				log.Printf("\033[31m[Error] Found backup %s, but original path %s is a directory! Manual check required.\033[0m\n", backupFilePath, originalFilePath)
+				continue // Skip to next file
+			}
+
+			// If we are here, backup exists, and original exists (or was missing and we'll overwrite).
+
+			fmt.Printf("\033[33m[Warning] Found backup file %s, indicating a previous run might have been interrupted.\033[0m\n", backupFilePath)
+			fmt.Printf("[Info] Attempting to restore original file '%s' from this backup...\n", originalFilePath)
+
+			// copyFile(src, dst)
+			if errRestore := copyFile(backupFilePath, originalFilePath); errRestore != nil {
+				log.Printf("\033[31m[Error] Failed to restore '%s' from backup '%s': %v. Manual intervention may be required.\033[0m\n", originalFilePath, backupFilePath, errRestore)
+			} else {
+				fmt.Printf("\033[32m[Success] Restored '%s' from '%s'.\033[0m\n", originalFilePath, backupFilePath)
+
+				if errRemove := os.Remove(backupFilePath); errRemove != nil {
+					log.Printf("\033[31m[Error] Failed to remove backup file '%s' after successful restore: %v\033[0m\n", backupFilePath, errRemove)
+				} else {
+					fmt.Printf("[Info] Removed backup file '%s'.\n", backupFilePath)
+					restoredCount++
+				}
+			}
+		} else if errBak != nil && !os.IsNotExist(errBak) {
+			// Log error if stating .bak file failed for reason other than not existing
+			log.Printf("[Warning] Could not check for backup file %s: %v\n", backupFilePath, errBak)
+		}
+	}
+
+	if restoredCount > 0 {
+		fmt.Printf("[Info] Finished checking for backups. %d file(s) were restored.\n", restoredCount)
+	}
 }

@@ -99,5 +99,5 @@ func True(condition bool, message string) {
 }
 
 func prefixMessage(customMessage string) string {
-	return fmt.Sprintf("Assertion failed: %s", customMessage)
+	return fmt.Sprintf("[Error] Assertion failed: %s", customMessage)
 }
