@@ -279,3 +279,44 @@ In the `lookupTokenSecondaryValue(...)` function, the `if` statement condition: 
 
 In the `beforeVoteSucceeded(...)` function, the `if` statement condition: `hooks.beforeVoteSucceeded` can be hardcoded to `true` without affecting the test suite. Consider adding tests for cases when the logic from the `if` branch of this statement is not executed.
 
+**Example 7**
+
+**Input Code Diff**:
+```diff
+--- original
++++ mutant
+@@ -453,7 +453,8 @@
+
+         hooks.afterVote(weight, proposalId, account, support, reason, params);
+
+-        if (params.length == 0) {
++        /// IfStatementMutation(`params.length == 0` |==> `true`) of: `if (params.length == 0) {`
++        if (true) {
+             emit VoteCast(account, proposalId, support, weight, reason);
+         } else {
+             emit VoteCastWithParams(account, proposalId, support, weight, reason, params);
+
+```
+
+**Input Function Context**:
+```solidity
+    function _castVote(uint256 proposalId, address account, uint8 support, string memory reason, bytes memory params)
+        internal
+        virtual
+        override(Governor)
+        returns (uint256 weight)
+    {
+        
+        hooks.afterVote(weight, proposalId, account, support, reason, params);
+
+        /// IfStatementMutation(`params.length == 0` |==> `true`) of: `if (params.length == 0) {`
+        if (true) {
+            emit VoteCast(account, proposalId, support, weight, reason);
+        } else {
+            emit VoteCastWithParams(account, proposalId, support, weight, reason, params);
+        }
+```
+
+###Desired_Output###
+
+In the `_castVote(...)` function, the `if` statement condition: `params.length == 0` can be hardcoded to `true` without affecting the test suite. Consider adding tests for cases when the logic from the `if` branch of this statement is not executed.
