@@ -117,32 +117,7 @@ func generateMutationAnalysisContext(
 		return ctx, fmt.Errorf("[Error] Mutation marker comment not found in '%s' using regex.\n", ctx.MutatedFilePathUsed)
 	}
 
-	// Increased context window for better LLM analysis
-	// Since each query is separate and local models can handle large contexts,
-	// we provide a generous context window to avoid cutting off long functions
-	linesBefore := 400
-	linesAfter := 100
-
-	start := max(markerLineIndex-linesBefore, 0)
-
-	end := min(markerLineIndex+linesAfter+1, len(lines))
-
-	// Ensure 'start' is not greater than 'end', which can happen for very small files
-	// or if markerLineIndex is near the beginning/end with large before/after counts.
-	if start >= end {
-		if len(lines) > 0 {
-			// If there are lines, but the range is bad
-			// Fallback to providing the whole file if the calculated slice is invalid
-			// or if markerLineIndex was a guess (e.g., middle of file) resulting in a weird range.
-			ctx.MutationContext += strings.Join(lines, "\n")
-			fmt.Printf("[Info] Context range was invalid for '%s', providing whole file. Start: %d, End: %d, MarkerIdx: %d, len(lines): %d\n", ctx.MutatedFilePathUsed, start, end, markerLineIndex, len(lines))
-		} else {
-			ctx.MutationContext = ""
-			return ctx, fmt.Errorf("[Error] Couldn't grab the context for '%s'. Start: %d, End: %d", ctx.MutatedFilePathUsed, start, end)
-		}
-	} else {
-		ctx.MutationContext += strings.Join(lines[start:end], "\n")
-	}
+	ctx.MutationContext = strings.Join(lines, "\n")
 
 	return ctx, nil
 }

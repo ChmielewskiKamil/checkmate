@@ -402,13 +402,13 @@ func parseCmdFlags(p *Program) {
 	llmEndpoint := flag.String(
 		"llm-endpoint",
 		"",
-		"LLM API endpoint URL (for local provider). Defaults to 'http://127.0.0.1:1234/v1/chat/completions'.",
+		"LLM API endpoint URL (for local provider). Defaults to 'http://127.0.0.1:11434/v1/chat/completions'.",
 	)
 
 	llmModel := flag.String(
 		"llm-model",
 		"",
-		"LLM model name/identifier to use. Defaults to 'qwen2.5-coder-7b-instruct' for local, or 'gemini-1.5-flash' for Gemini.",
+		"LLM model name/identifier to use. Defaults to 'qwen:latest' for local, or 'gemini-1.5-flash' for Gemini.",
 	)
 
 	llmAPIKey := flag.String(

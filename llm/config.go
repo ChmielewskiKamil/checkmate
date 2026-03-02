@@ -25,9 +25,9 @@ type LLMConfig struct {
 // LoadConfigFromEnv loads LLM configuration from environment variables
 func LoadConfigFromEnv() LLMConfig {
 	config := LLMConfig{
-		Provider: ProviderTypeLocal, // Default to local
-		Endpoint: "http://127.0.0.1:1234/v1/chat/completions",
-		Model:    "qwen2.5-coder-7b-instruct",
+		Provider: ProviderTypeLocal,
+		Endpoint: "http://127.0.0.1:11434/v1/chat/completions",
+		Model:    "qwen:latest",
 	}
 
 	// Provider type

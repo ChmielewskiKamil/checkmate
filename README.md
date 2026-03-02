@@ -102,14 +102,49 @@ to generate the mutations.
 
 ### Using a local LLM to analyze the results
 
-The `Qwen2.5-Coder-7B-Instruct` gives superior output and is fast. On an M1
-MacBook Pro with 16 GBs of RAM it is able to analyze each missing test case in
-~20 seconds. 
+Checkmate uses a local LLM (via an OpenAI-compatible API) to analyze surviving
+mutants. By default it connects to Ollama at `http://127.0.0.1:11434` using the
+`qwen:latest` model.
 
-#### Other tested models
+#### Configuring the LLM endpoint and model
 
-- `DeepSeek-R1-Distill-Qwen-7B` gives decent results but is slow. It takes 
-  ~40-60 seconds to analyze a missing test case. This is a thinking model so it
-  also prints the thought process output. The output format is unreliable and
-  relatively hard to control while the `Qwen2.5-Coder-7B-Instruct` one-shots
-  each test case even without examples.
+You can override the defaults with environment variables or CLI flags.
+CLI flags take priority over environment variables, which take priority over
+the built-in defaults.
+
+**Environment variables:**
+
+```shell
+export CHECKMATE_LLM_PROVIDER="local"                                  # "local" or "gemini"
+export CHECKMATE_LLM_ENDPOINT="http://127.0.0.1:11434/v1/chat/completions"  # OpenAI-compatible endpoint
+export CHECKMATE_LLM_MODEL="qwen:latest"                                # Model name as known by your provider
+export CHECKMATE_LLM_API_KEY=""                                         # Only needed for Gemini
+```
+
+**CLI flags (override env vars):**
+
+```shell
+checkmate --analyze \
+  --llm-provider local \
+  --llm-endpoint "http://192.168.1.50:11434/v1/chat/completions" \
+  --llm-model "qwen:latest"
+```
+
+**Common setups:**
+
+| Setup | Endpoint | Model |
+|-------|----------|-------|
+| Ollama (default port) | `http://127.0.0.1:11434/v1/chat/completions` | `qwen:latest` |
+| Ollama (remote/VM) | `http://<vm-ip>:11434/v1/chat/completions` | `qwen:latest` |
+| LM Studio | `http://127.0.0.1:1234/v1/chat/completions` | Model name from LM Studio |
+| llama-server | `http://127.0.0.1:8081/v1/chat/completions` | Model name |
+
+#### Tested models
+
+- `Qwen 3.5 35B` (via Ollama as `qwen:latest`) - recommended. Provides high
+  quality analysis with full file context. With 128K context window it handles
+  even large Solidity files without truncation (tested with 128K, but that might
+  be an overkill, 32K should be more than enough).
+- `Qwen2.5-Coder-7B-Instruct` - lighter alternative, fast on consumer hardware.
+- `DeepSeek-R1-Distill-Qwen-7B` - decent results but slow. Thinking model with
+  unreliable output format.
