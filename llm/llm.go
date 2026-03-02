@@ -3,11 +3,8 @@ package llm
 import (
 	"bytes"
 	"embed"
-	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
-	"net/http"
 	"path"
 	"text/template"
 	"time"
@@ -64,73 +61,20 @@ type APIResponse struct {
 	// TODO: What about other fields like Usage, Error, etc.
 }
 
-// AnalyzeMutation constructs and sends a request to the local LLM API.
-func AnalyzeMutation(ctx MutationAnalysisContext) (string, error) {
-	// TODO: This was moved above the construction of system prompt purely to get test data
-	userContent := fmt.Sprintf(
-		"Mutation Type: %s\n\n**Input Code Diff**:\n```diff\n%s\n```\n\n**Input Function Context**:\n```solidity\n%s\n```\n\n",
-		ctx.MutationType,
-		ctx.MutationDiff,
-		ctx.MutationContext,
-	)
-
-	fmt.Printf("\033[32m%s\033[0m", userContent)
-
+// AnalyzeMutation analyzes a mutation using the provided LLM provider
+func AnalyzeMutation(ctx MutationAnalysisContext, provider LLMProvider) (string, error) {
 	customizedSystemPrompt, err := getCustomSystemPrompt(ctx.MutationType)
 	if err != nil {
-		return "", fmt.Errorf("Failure loading embedded system prompts: %s", err)
+		return "", fmt.Errorf("failure loading embedded system prompts: %w", err)
 	}
 
-	// TODO: Before constructing the request, send GET v1/models to query
-	// available models.
-
-	// 4. Construct the API request payload
-	apiRequest := APIRequest{
-		// Model: "deepseek-r1-distill-qwen-7b",
-		Model: "qwen2.5-coder-7b-instruct",
-		Messages: []Message{
-			{Role: "system", Content: customizedSystemPrompt},
-			{Role: "user", Content: userContent},
-		},
-		Temperature: 0.1,
-		MaxTokens:   -1, // No limit
-	}
-
-	requestBody, err := json.Marshal(apiRequest)
+	// Delegate to the provider for actual API communication
+	response, err := provider.Analyze(ctx, customizedSystemPrompt)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request body: %w", err)
+		return "", fmt.Errorf("LLM analysis failed: %w", err)
 	}
 
-	// 5. Make the HTTP POST request
-	defer TrackTime(time.Now(), "Calling an LLM")
-	llmEndpoint := "http://127.0.0.1:1234/v1/chat/completions"
-	resp, err := http.Post(llmEndpoint, "application/json", bytes.NewBuffer(requestBody))
-	if err != nil {
-		return "", fmt.Errorf("failed to make POST request to %s: %w", llmEndpoint, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		responseBodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API request failed with status %s: %s", resp.Status, string(responseBodyBytes))
-	}
-
-	// 6. Decode the response
-	var apiResponse APIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResponse); err != nil {
-		return "", fmt.Errorf("failed to decode API response: %w", err)
-	}
-
-	// 7. Extract and return the assistant's message
-	if len(apiResponse.Choices) > 0 && apiResponse.Choices[0].Message.Role == "assistant" {
-		fmt.Println("\n--- LLM Analysis Result ---")
-		fmt.Printf("\033[33m" + apiResponse.Choices[0].Message.Content + "\033[0m" + "\n")
-		fmt.Println("---------------------------")
-
-		return apiResponse.Choices[0].Message.Content, nil
-	}
-
-	return "", fmt.Errorf("no valid assistant message found in response. Full response: %+v", apiResponse)
+	return response, nil
 }
 
 // Helper function to read a snippet file

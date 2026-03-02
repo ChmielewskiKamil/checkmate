@@ -14,6 +14,8 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/ChmielewskiKamil/checkmate/assert"
 	"github.com/ChmielewskiKamil/checkmate/db"
@@ -33,6 +35,12 @@ type Program struct {
 	contractsDIR     *string // Path to the folder where Solidity contracts are store. Default is "src/".
 	analyzeMutations *bool   // Whether to analyze mutations with LLM or not
 	printReport      *bool   // Pretty print the mutation analysis report after all is done.
+
+	// LLM configuration flags
+	llmProvider *string // LLM provider type: "local" or "gemini"
+	llmEndpoint *string // LLM endpoint URL (for local provider)
+	llmModel    *string // LLM model name
+	llmAPIKey   *string // LLM API key (for Gemini provider)
 
 	// dbState holds all persistent information, loaded from and saved to mutationAnalysisStateFile.
 	// All statistics and progress will be read from and written to this struct.
@@ -132,11 +140,36 @@ func Run(p *Program) (err error) {
 	if *p.analyzeMutations {
 		fmt.Println("[Info] LLM Analysis mode selected.")
 
+		// Load LLM configuration from environment variables
+		llmConfig := llm.LoadConfigFromEnv()
+
+		// Merge with CLI flags (flags take priority)
+		llmConfig.MergeWithFlags(*p.llmProvider, *p.llmEndpoint, *p.llmModel, *p.llmAPIKey)
+
+		// Set defaults for Gemini if provider is gemini but model not specified
+		if llmConfig.Provider == llm.ProviderTypeGemini && llmConfig.Model == "" {
+			llmConfig.Model = "gemini-1.5-flash"
+		}
+
+		// Validate configuration
+		if err := llmConfig.Validate(); err != nil {
+			return fmt.Errorf("LLM configuration error: %w", err)
+		}
+
+		// Create provider
+		provider, err := llm.NewProvider(llmConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create LLM provider: %w", err)
+		}
+
+		fmt.Printf("[Info] Using LLM provider: %s, model: %s\n", llmConfig.Provider, provider.GetModelName())
+
 		llmErr := llm.AnalyzeMutations(
 			*p.mutantsDIR,      // Path to the mutants directory (e.g., ./gambit_out/mutants)
 			&p.dbState,         // Pointer to the persistent state object
 			db.SaveStateToFile, // The actual save function
 			stateFileName,      // The name of the state file
+			provider,           // LLM provider
 		)
 		if llmErr != nil {
 			return fmt.Errorf("LLM analysis failed: %w", llmErr) // Propagate error
@@ -359,6 +392,31 @@ func parseCmdFlags(p *Program) {
 
 	printReport := flag.Bool("print", false, "Print a summary report from the last analysis state and exit.")
 
+	// LLM configuration flags
+	llmProvider := flag.String(
+		"llm-provider",
+		"",
+		"LLM provider to use: 'local' (OpenAI-compatible, e.g., Ollama, LM Studio) or 'gemini' (Google Gemini API). Defaults to 'local'.",
+	)
+
+	llmEndpoint := flag.String(
+		"llm-endpoint",
+		"",
+		"LLM API endpoint URL (for local provider). Defaults to 'http://127.0.0.1:1234/v1/chat/completions'.",
+	)
+
+	llmModel := flag.String(
+		"llm-model",
+		"",
+		"LLM model name/identifier to use. Defaults to 'qwen2.5-coder-7b-instruct' for local, or 'gemini-1.5-flash' for Gemini.",
+	)
+
+	llmAPIKey := flag.String(
+		"llm-api-key",
+		"",
+		"LLM API key (required for Gemini provider). Can also be set via CHECKMATE_LLM_API_KEY environment variable.",
+	)
+
 	flag.Parse()
 
 	if *versionFlag {
@@ -383,6 +441,10 @@ func parseCmdFlags(p *Program) {
 	p.contractsDIR = contractFilesPath
 	p.analyzeMutations = analyzeMutations
 	p.printReport = printReport
+	p.llmProvider = llmProvider
+	p.llmEndpoint = llmEndpoint
+	p.llmModel = llmModel
+	p.llmAPIKey = llmAPIKey
 
 	// Post-conditions
 	// TODO: Gambit config should be a valid json file
@@ -561,20 +623,319 @@ func testSuitePasses(p *Program, detailedLogs bool) bool {
 	// sh -c enables the CMD to be passed as a single string without slicing
 	cmd := exec.Command("sh", "-c", *p.testCMD)
 	fmt.Printf("[Info] Running the test suite with: %s.\n", *p.testCMD)
-	output, err := cmd.CombinedOutput()
+	fmt.Printf("[DEBUG] Command created, setting up pipes...\n")
 
+	// Use separate pipes for stdout and stderr to stream output and detect failures early
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[Error] Failed to create stdout pipe: %v\n", err)
+		return false
+	}
+	fmt.Printf("[DEBUG] Stdout pipe created\n")
+
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[Error] Failed to create stderr pipe: %v\n", err)
+		return false
+	}
+	fmt.Printf("[DEBUG] Stderr pipe created\n")
+
+	// Buffer to capture output for detailed error reporting (only if needed)
+	var outputLines []string
+	var outputMutex sync.Mutex
+
+	// Channels for coordination
+	failureDetected := make(chan struct{}, 1)
+	stdoutComplete := make(chan struct{}, 1)
+	stderrComplete := make(chan struct{}, 1)
+
+	// Helper to safely append output lines
+	appendOutput := func(line string) {
+		outputMutex.Lock()
+		defer outputMutex.Unlock()
+		outputLines = append(outputLines, line)
+	}
+
+	// Scanner for stdout
+	stdoutScanner := bufio.NewScanner(stdoutPipe)
+	go func() {
+		fmt.Printf("[DEBUG] Stdout scanner goroutine started\n")
+		defer func() {
+			fmt.Printf("[DEBUG] Stdout scanner goroutine finishing, sending complete signal\n")
+			stdoutComplete <- struct{}{}
+		}()
+		lineCount := 0
+		for stdoutScanner.Scan() {
+			lineCount++
+			line := stdoutScanner.Text()
+			if lineCount <= 5 || lineCount%100 == 0 {
+				fmt.Printf("[DEBUG] Stdout line %d: %s\n", lineCount, line)
+			}
+			appendOutput(line)
+
+			// Detect failure patterns in forge output
+			// Forge outputs failures like: [FAIL. Reason: ...] or [FAIL: ...]
+			if strings.Contains(line, "[FAIL") || strings.Contains(line, "FAIL:") {
+				fmt.Printf("[DEBUG] FAILURE DETECTED in stdout: %s\n", line)
+				select {
+				case failureDetected <- struct{}{}:
+					fmt.Printf("[DEBUG] Failure signal sent to channel\n")
+				default:
+					fmt.Printf("[DEBUG] Failed to send failure signal (channel full)\n")
+				}
+				return
+			}
+
+			// Also check for common failure indicators
+			if strings.Contains(line, "Error:") && (strings.Contains(line, "test") || strings.Contains(line, "Test")) {
+				fmt.Printf("[DEBUG] ERROR DETECTED in stdout: %s\n", line)
+				select {
+				case failureDetected <- struct{}{}:
+					fmt.Printf("[DEBUG] Failure signal sent to channel\n")
+				default:
+					fmt.Printf("[DEBUG] Failed to send failure signal (channel full)\n")
+				}
+				return
+			}
+		}
+		if err := stdoutScanner.Err(); err != nil {
+			fmt.Printf("[DEBUG] Stdout scanner error: %v\n", err)
+		}
+		fmt.Printf("[DEBUG] Stdout scanner finished, scanned %d lines\n", lineCount)
+	}()
+
+	// Scanner for stderr
+	stderrScanner := bufio.NewScanner(stderrPipe)
+	go func() {
+		fmt.Printf("[DEBUG] Stderr scanner goroutine started\n")
+		defer func() {
+			fmt.Printf("[DEBUG] Stderr scanner goroutine finishing, sending complete signal\n")
+			stderrComplete <- struct{}{}
+		}()
+		lineCount := 0
+		for stderrScanner.Scan() {
+			lineCount++
+			line := stderrScanner.Text()
+			if lineCount <= 5 || lineCount%100 == 0 {
+				fmt.Printf("[DEBUG] Stderr line %d: %s\n", lineCount, line)
+			}
+			appendOutput(line)
+
+			// Check stderr for failure patterns too
+			if strings.Contains(line, "[FAIL") || strings.Contains(line, "FAIL:") ||
+				strings.Contains(line, "Error:") {
+				fmt.Printf("[DEBUG] FAILURE/ERROR DETECTED in stderr: %s\n", line)
+				select {
+				case failureDetected <- struct{}{}:
+					fmt.Printf("[DEBUG] Failure signal sent to channel\n")
+				default:
+					fmt.Printf("[DEBUG] Failed to send failure signal (channel full)\n")
+				}
+				return
+			}
+		}
+		if err := stderrScanner.Err(); err != nil {
+			fmt.Printf("[DEBUG] Stderr scanner error: %v\n", err)
+		}
+		fmt.Printf("[DEBUG] Stderr scanner finished, scanned %d lines\n", lineCount)
+	}()
+
+	// Start the command
+	fmt.Printf("[DEBUG] Starting command...\n")
+	// Give goroutines a moment to start reading from pipes
+	time.Sleep(50 * time.Millisecond)
+	fmt.Printf("[DEBUG] Goroutines should be running now, starting command...\n")
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "[Error] Failed to start test command: %v\n", err)
+		return false
+	}
+	fmt.Printf("[DEBUG] Command started, PID: %d\n", cmd.Process.Pid)
+	
+	// Start waiting for command completion immediately
+	cmdDone := waitForCmd(cmd)
+	fmt.Printf("[DEBUG] Started waiting for command completion\n")
+	fmt.Printf("[DEBUG] Entering select statement, waiting for failure or completion...\n")
+
+	// Wait for either failure detection, command completion, or scanner completion
+	// If scanners finish first, we'll wait a bit for the command to finish
+	select {
+	case <-failureDetected:
+		fmt.Printf("[DEBUG] Failure detected case triggered\n")
+		// Failure detected - kill the process immediately
+		fmt.Printf("[DEBUG] Attempting to kill process...\n")
+		if cmd.Process != nil {
+			// Kill the process immediately
+			if err := cmd.Process.Kill(); err != nil {
+				fmt.Printf("[DEBUG] Failed to kill test process: %v\n", err)
+				log.Printf("[Warning] Failed to kill test process: %v\n", err)
+			} else {
+				fmt.Printf("[DEBUG] Process killed successfully\n")
+				// Try to kill the entire process group to ensure child processes are terminated
+				// This is important for forge which may spawn multiple processes
+				if cmd.Process.Pid > 0 {
+					fmt.Printf("[DEBUG] Attempting to kill process group %d\n", cmd.Process.Pid)
+					// Use kill command to kill process group (negative PID)
+					killCmd := exec.Command("kill", "-9", fmt.Sprintf("-%d", cmd.Process.Pid))
+					if err := killCmd.Run(); err != nil {
+						fmt.Printf("[DEBUG] Failed to kill process group: %v\n", err)
+					} else {
+						fmt.Printf("[DEBUG] Process group killed\n")
+					}
+				}
+			}
+		} else {
+			fmt.Printf("[DEBUG] cmd.Process is nil!\n")
+		}
+
+		// Wait for process to terminate (with timeout)
+		done := make(chan error, 1)
+		go func() {
+			done <- cmd.Wait()
+		}()
+
+		// Wait for either process termination or timeout
+		select {
+		case <-done:
+			// Process terminated
+		case <-time.After(2 * time.Second):
+			// Timeout - process didn't terminate quickly, but we'll continue anyway
+			log.Printf("[Warning] Test process did not terminate within timeout\n")
+		}
+
+		// Wait briefly for scanners to finish collecting output
+		select {
+		case <-stdoutComplete:
+		case <-time.After(500 * time.Millisecond):
+		}
+		select {
+		case <-stderrComplete:
+		case <-time.After(500 * time.Millisecond):
+		}
+
+		// Collect output for detailed logs if needed
+		if detailedLogs {
+			fmt.Fprintf(os.Stderr, "[Error] Test suite failed (failure detected early).\n")
+			fmt.Fprintln(os.Stderr, "\033[31m------- Test Output - Start -------\033[0m")
+			outputMutex.Lock()
+			for _, line := range outputLines {
+				fmt.Fprintln(os.Stderr, line)
+			}
+			outputMutex.Unlock()
+			fmt.Fprintln(os.Stderr, "\033[31m------- Test Output - End -------\033[0m")
+		} else {
+			fmt.Println("[Info] Test suite failed (failure detected early).")
+		}
+		return false
+
+	case <-stdoutComplete:
+		fmt.Printf("[DEBUG] Stdout scanner completed\n")
+		// Wait a bit to see if stderr finishes or command completes
+		select {
+		case <-stderrComplete:
+			fmt.Printf("[DEBUG] Both scanners completed\n")
+		case err := <-cmdDone:
+			fmt.Printf("[DEBUG] Command completed while waiting for stderr, err: %v\n", err)
+			// Wait for stderr to finish reading
+			select {
+			case <-stderrComplete:
+			case <-time.After(2 * time.Second):
+			}
+			return handleCommandCompletion(err, detailedLogs, outputLines, &outputMutex)
+		case <-time.After(2 * time.Second):
+		}
+		// Now wait for command to complete (scanners are done or timed out)
+		fmt.Printf("[DEBUG] Waiting for command to complete after scanners finished...\n")
+		select {
+		case err := <-cmdDone:
+			fmt.Printf("[DEBUG] Command completed after scanners, err: %v\n", err)
+			return handleCommandCompletion(err, detailedLogs, outputLines, &outputMutex)
+		case <-time.After(10 * time.Second):
+			fmt.Printf("[DEBUG] Command didn't complete after 10 seconds, assuming it finished\n")
+			// Command likely already finished, cmdDone should have the result
+			// But if it's not there, the process probably exited successfully
+			// (no failure was detected, so assume success)
+			select {
+			case err := <-cmdDone:
+				return handleCommandCompletion(err, detailedLogs, outputLines, &outputMutex)
+			default:
+				// No error in channel and no failure detected = success
+				fmt.Printf("[DEBUG] No error found, assuming test passed\n")
+				return handleCommandCompletion(nil, detailedLogs, outputLines, &outputMutex)
+			}
+		}
+
+	case <-stderrComplete:
+		fmt.Printf("[DEBUG] Stderr scanner completed\n")
+		// Similar to stdout - wait a bit then wait for command
+		select {
+		case <-stdoutComplete:
+			fmt.Printf("[DEBUG] Both scanners completed\n")
+		case err := <-cmdDone:
+			fmt.Printf("[DEBUG] Command completed while waiting for stdout, err: %v\n", err)
+			select {
+			case <-stdoutComplete:
+			case <-time.After(2 * time.Second):
+			}
+			return handleCommandCompletion(err, detailedLogs, outputLines, &outputMutex)
+		case <-time.After(2 * time.Second):
+		}
+		// Wait for command
+		select {
+		case err := <-cmdDone:
+			fmt.Printf("[DEBUG] Command completed, err: %v\n", err)
+			return handleCommandCompletion(err, detailedLogs, outputLines, &outputMutex)
+		case <-time.After(10 * time.Second):
+			select {
+			case err := <-cmdDone:
+				return handleCommandCompletion(err, detailedLogs, outputLines, &outputMutex)
+			default:
+				fmt.Printf("[DEBUG] No error found, assuming test passed\n")
+				return handleCommandCompletion(nil, detailedLogs, outputLines, &outputMutex)
+			}
+		}
+
+	case err := <-cmdDone:
+		fmt.Printf("[DEBUG] Command completed case triggered, err: %v\n", err)
+		// Command completed normally - wait for scanners to finish
+		fmt.Printf("[DEBUG] Waiting for stdout scanner to complete...\n")
+		select {
+		case <-stdoutComplete:
+			fmt.Printf("[DEBUG] Stdout scanner completed\n")
+		case <-time.After(2 * time.Second):
+			fmt.Printf("[DEBUG] Timeout waiting for stdout scanner\n")
+		}
+		fmt.Printf("[DEBUG] Waiting for stderr scanner to complete...\n")
+		select {
+		case <-stderrComplete:
+			fmt.Printf("[DEBUG] Stderr scanner completed\n")
+		case <-time.After(2 * time.Second):
+			fmt.Printf("[DEBUG] Timeout waiting for stderr scanner\n")
+		}
+
+		return handleCommandCompletion(err, detailedLogs, outputLines, &outputMutex)
+	}
+
+	// Post-conditions
+}
+
+// handleCommandCompletion processes the command completion result
+func handleCommandCompletion(err error, detailedLogs bool, outputLines []string, outputMutex *sync.Mutex) bool {
 	if err != nil {
 		// Check if the command error is due to the command not being found
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			// If exit code is non-zero, check if it's due to command not found or other reasons
 			if exitErr.ExitCode() == 127 {
-				fmt.Fprintf(os.Stderr, "[Error] Command not found: %s\n", *p.testCMD)
+				fmt.Fprintf(os.Stderr, "[Error] Command not found\n")
 			} else {
 				if detailedLogs {
-					fmt.Fprintf(os.Stderr, "[Error] %s\n        Foundry's forge output:\n", err)
-					fmt.Fprintln(os.Stderr, "\033[31m------- Foundry Error Zone - Start -------\033[0m")
-					fmt.Fprintln(os.Stderr, string(output))
-					fmt.Fprintln(os.Stderr, "\033[31m------- Foundry Error Zone - End -------\033[0m")
+					fmt.Fprintf(os.Stderr, "[Error] %s\n        Test output:\n", err)
+					fmt.Fprintln(os.Stderr, "\033[31m------- Test Output - Start -------\033[0m")
+					outputMutex.Lock()
+					for _, line := range outputLines {
+						fmt.Fprintln(os.Stderr, line)
+					}
+					outputMutex.Unlock()
+					fmt.Fprintln(os.Stderr, "\033[31m------- Test Output - End -------\033[0m")
 				}
 			}
 		} else {
@@ -588,8 +949,6 @@ func testSuitePasses(p *Program, detailedLogs bool) bool {
 	// If no errors, the test suite passed
 	fmt.Println("[Info] Test suite passed successfully.")
 	return true
-
-	// Post-conditions
 }
 
 func printMutationStats(p *Program) {

@@ -117,8 +117,11 @@ func generateMutationAnalysisContext(
 		return ctx, fmt.Errorf("[Error] Mutation marker comment not found in '%s' using regex.\n", ctx.MutatedFilePathUsed)
 	}
 
-	linesBefore := 25
-	linesAfter := 5
+	// Increased context window for better LLM analysis
+	// Since each query is separate and local models can handle large contexts,
+	// we provide a generous context window to avoid cutting off long functions
+	linesBefore := 400
+	linesAfter := 100
 
 	start := max(markerLineIndex-linesBefore, 0)
 
@@ -152,6 +155,7 @@ func AnalyzeMutations(
 	analysisDb *db.MutationAnalysis,
 	stateFileSaveFunc func(filePath string, data *db.MutationAnalysis) error, // Callback for saving state
 	stateFilePath string, // Path to the state file (e.g., "checkmate_analysis_state.json")
+	provider LLMProvider, // LLM provider to use for analysis
 ) error {
 	// --- Pre-condition checks for mutantsDirPath ---
 	info, err := os.Stat(mutantsDirPath)
@@ -243,13 +247,10 @@ func AnalyzeMutations(
 		// 4. Create context for the LLM
 		llmContext, ctxErr := generateMutationAnalysisContext(mutantID, mutantsDirPath, mutantInfo)
 
-		// TODO: Handle model used by an API call. For now hardcoded.
-		modelUsedPlaceholder := "qwen2.5-coder-7b-instruct"
-
 		outcome := db.MutantLLMAnalysisOutcome{
 			MutantID:  mutantID,
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			ModelUsed: modelUsedPlaceholder,
+			ModelUsed: provider.GetModelName(),
 		}
 
 		if ctxErr != nil {
@@ -259,7 +260,7 @@ func AnalyzeMutations(
 			// LLMResponse remains empty (its zero value)
 		} else {
 			// 5. Analyze Mutation with context
-			llmResponseContent, analysisErr := AnalyzeMutation(llmContext)
+			llmResponseContent, analysisErr := AnalyzeMutation(llmContext, provider)
 
 			if analysisErr != nil {
 				log.Printf("[Error] LLM Analysis: LLM call failed for mutant ID %s: %v.\n", mutantID, analysisErr)
